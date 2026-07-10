@@ -17,25 +17,23 @@ typedef int16_t i16;
 typedef int8_t i8;
 
 static const struct option OPTIONS[] = {
-    { "help", no_argument, nullptr, 'h'},
-    {"graph", no_argument, nullptr, 'g'},
+    {"help", no_argument, nullptr, 'h'},
 };
 
-typedef struct {
-    char *input_file;
+struct args_t {
+    char *rom_file;
     bool help;
-    bool graph;
-} Args;
+};
 
-static Args args_init()
+static struct args_t args_init()
 {
-    return (Args){
+    return (struct args_t){
         .help = false,
-        .graph = false,
     };
 }
 
-static bool parse_args(int argc, char *argv[static 1], Args out_args[static 1])
+static bool parse_args(int argc, char *argv[static 1],
+                       struct args_t out_args[static 1])
 {
     *out_args = args_init();
 
@@ -46,9 +44,6 @@ static bool parse_args(int argc, char *argv[static 1], Args out_args[static 1])
             case 'h':
                 out_args->help = true;
                 return true;
-            case 'g':
-                out_args->graph = true;
-                break;
             default:
                 return false;
         }
@@ -57,7 +52,7 @@ static bool parse_args(int argc, char *argv[static 1], Args out_args[static 1])
     if (optind >= argc)
         return false;
 
-    out_args->input_file = argv[optind];
+    out_args->rom_file = argv[optind];
     return true;
 }
 
@@ -66,8 +61,7 @@ static bool parse_args(int argc, char *argv[static 1], Args out_args[static 1])
 static constexpr char USAGE[] = "Usage: " EXE_NAME " [options] [rom_file] \n"
                                 "NES disassembler.                    \n"
                                 "                                     \n"
-                                "  -h, --help   show this help message\n"
-                                "  -g, --graph  visualize code DAG    \n";
+                                "  -h, --help   show this help message\n";
 
 static size_t fsize(FILE *file)
 {
@@ -509,7 +503,7 @@ static void disassemble(size_t n, const u8 data[static n], u16 load_addr,
 
 int main(int argc, char *argv[static argc + 1])
 {
-    Args args = args_init();
+    struct args_t args = args_init();
 
     if (!parse_args(argc, argv, &args)) {
         fputs(USAGE, stderr);
@@ -522,7 +516,7 @@ int main(int argc, char *argv[static argc + 1])
         return EXIT_SUCCESS;
     }
 
-    FILE *file = fopen(args.input_file, "r");
+    FILE *file = fopen(args.rom_file, "r");
 
     if (file == nullptr) {
         perror("Could not open file");
