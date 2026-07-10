@@ -1,5 +1,11 @@
 nessie_sources = [
+  'cpu.c',
+  'error.c',
+  'ines.c',
   'main.c',
+  'mapper.c',
+  'nes.c',
+  'util.c',
 ]
 
 nessie_dependencies = [

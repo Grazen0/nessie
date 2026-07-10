@@ -1,92 +1,118 @@
-#include <stdint.h>
+#include "error.h"
+#include "nes.h"
+#include "util.h"
+#include <assert.h>
+#include <getopt.h>
+#include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 
-typedef uint64_t u64;
-typedef uint32_t u32;
-typedef uint16_t u16;
-typedef uint8_t u8;
+#define EXE_NAME "nessie"
 
-typedef int64_t i64;
-typedef int32_t i32;
-typedef int16_t i16;
-typedef int8_t i8;
+static constexpr char USAGE[] = "Usage: " EXE_NAME " [options] [rom_file] \n"
+                                "A NES emulator written in C.             \n"
+                                "                                         \n"
+                                "  -h, --help   show this help message    \n";
 
-enum cpu_flag_t : u8 {
-    FLAG_N = 1 << 7, // negative
-    PLAG_V = 1 << 6, // overflow
-    PLAG_B = 1 << 4, // break
-    PLAG_D = 1 << 3, // decimal
-    PLAG_I = 1 << 2, // interrupt disable
-    PLAG_Z = 1 << 1, // zero
-    PLAG_C = 1 << 0, // carry
+static const struct option OPTIONS[] = {
+    {"help", no_argument, nullptr, 'h'},
 };
 
-struct cpu_t {
-    u16 pc;
-    u8 s;
-    u8 a;
-    u8 x;
-    u8 y;
-    u8 p;
+struct args_t {
+    char *rom_file;
 };
 
-typedef struct {
-    u8 (*read)(void *ptr, u16 addr);
-    void (*write)(void *ptr, u16 addr, u8 value);
-    void (*deinit)(void *ptr);
-} MemoryVTable;
-
-typedef struct {
-    void *ptr;
-    const MemoryVTable *vtable;
-} Memory;
-
-static inline u8 memory_read(Memory mem, u16 addr)
+static bool parse_args(int argc, char *argv[static 1],
+                       struct args_t out_args[static 1])
 {
-    return mem.vtable->read(mem.ptr, addr);
+    struct args_t args = {
+        .rom_file = nullptr,
+    };
+
+    int opt = -1;
+
+    while ((opt = getopt_long(argc, argv, "hb:l:", OPTIONS, nullptr)) != -1) {
+        switch (opt) {
+            case 'h':
+                fputs(USAGE, stdout);
+                exit(0);
+            default:
+                return false;
+        }
+    }
+
+    if (optind >= argc)
+        return false;
+
+    args.rom_file = argv[optind];
+
+    *out_args = args;
+    return true;
 }
 
-static inline void memory_write(Memory mem, u16 addr, u8 value)
+static u8 *load_file(const char filename[static 1], size_t *out_size)
 {
-    mem.vtable->write(mem.ptr, addr, value);
+    u8 *data = nullptr;
+    FILE *file = fopen(filename, "r");
+
+    if (file != nullptr) {
+        fseek(file, 0, SEEK_END);
+        size_t size = ftell(file);
+        rewind(file);
+
+        data = malloc(size);
+
+        if (data != nullptr)
+            *out_size = fread(data, 1, size, file);
+
+        fclose(file);
+    }
+
+    return data;
 }
 
-static inline void memory_deinit(Memory mem)
+int main(int argc, char *argv[static argc + 1])
 {
-    mem.vtable->deinit(mem.ptr);
-}
+    struct args_t args = {};
 
-static u16 memory_read_u16(Memory mem, u16 addr)
-{
-    u16 lo = memory_read(mem, addr);
-    u16 hi = memory_read(mem, addr + 1);
-    return (hi << 8) | lo;
-}
+    if (!parse_args(argc, argv, &args)) {
+        fputs(USAGE, stderr);
+        printf("Try '" EXE_NAME " -h' for more information.\n");
+        return EXIT_FAILURE;
+    }
 
-static u16 cpu_read_pc(struct cpu_t *cpu, Memory mem)
-{
-    return memory_read(mem, cpu->pc++);
-}
+    size_t rom_len = 0;
+    u8 *rom = load_file(args.rom_file, &rom_len);
+    if (rom == nullptr) {
+        perror("Error opening ROM file");
+        return EXIT_FAILURE;
+    }
 
-static u16 cpu_read_pc_u16(struct cpu_t *cpu, Memory mem)
-{
-    u16 lo = cpu_read_pc(cpu, mem);
-    u16 hi = cpu_read_pc(cpu, mem);
+    int retval = EXIT_SUCCESS;
 
-    return (hi << 8) | lo;
-}
+    struct nes_t nes = {};
+    if (!nes_init(&nes)) {
+        retval = EXIT_FAILURE;
+        goto cleanup_1;
+    }
 
-static void cpu_step(struct cpu_t *cpu, Memory mem)
-{
-    u8 opcode = cpu_read_pc(cpu, mem);
+    enum nes_error_t err = NES_OK;
 
-    u8 aaa = (opcode >> 5) & 0b111;
-    u8 bbb = (opcode >> 2) & 0b111;
-    u8 cc = opcode & 0b11;
-}
+    struct ines_t ines = {};
+    NES_TRY(ines_parse(rom_len, rom, &ines));
 
-int main()
-{
-    printf("hello\n");
-    return 0;
+    if ((err = nes_load_rom(&nes, &ines)) != NES_OK) {
+        fprintf(stderr, "Error: %s\n", nes_error_str(err));
+        retval = EXIT_FAILURE;
+        goto cleanup_2;
+    }
+
+    nes_reset(&nes);
+
+cleanup_2:
+    nes_deinit(&nes);
+cleanup_1:
+    free(rom);
+
+    return retval;
 }
