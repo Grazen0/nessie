@@ -6,27 +6,6 @@
 #include <stddef.h>
 #include <stdlib.h>
 
-void mapper_deinit(struct mapper_t mapper)
-{
-    mapper.vtable->deinit(mapper.ptr);
-    free(mapper.ptr);
-}
-
-u8 mapper_read(struct mapper_t mapper, u16 addr)
-{
-    return mapper.vtable->read(mapper.ptr, addr);
-}
-
-void mapper_write(struct mapper_t mapper, u16 addr, u8 value)
-{
-    mapper.vtable->write(mapper.ptr, addr, value);
-}
-
-u8 mapper_read_ppu(struct mapper_t mapper, u16 addr)
-{
-    return mapper.vtable->read_ppu(mapper.ptr, addr);
-}
-
 struct nrom_mapper_t {
     u8 *prg_rom;
     size_t prg_rom_len;

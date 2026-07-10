@@ -3,6 +3,7 @@
 #include "error.h"
 #include "ines.h"
 #include "mapper.h"
+#include "util.h"
 #include <stdlib.h>
 
 static u8 nes_read_mem(struct nes_t nes[static 1], u16 addr)
@@ -201,4 +202,14 @@ void nes_reset(struct nes_t nes[static 1])
 {
     struct memory_t mem = nes_as_memory(nes);
     cpu_reset(&nes->cpu, mem);
+}
+
+u64 nes_dispatch_cpu(struct nes_t nes[static 1])
+{
+    u64 start_cycles = nes->cpu.cycles;
+
+    struct memory_t mem = nes_as_memory(nes);
+    cpu_step(&nes->cpu, mem);
+
+    return nes->cpu.cycles - start_cycles;
 }

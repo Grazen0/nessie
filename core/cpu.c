@@ -3,6 +3,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+static constexpr u16 NMI_LOC = 0xFFFA;
+static constexpr u16 RES_LOC = 0xFFFC;
+static constexpr u16 IRQ_LOC = 0xFFFE;
+
 enum cpu_flag_t : u8 {
     FLAG_N = 1 << 7, // negative
     FLAG_V = 1 << 6, // overflow
@@ -12,21 +16,6 @@ enum cpu_flag_t : u8 {
     FLAG_Z = 1 << 1, // zero
     FLAG_C = 1 << 0, // carry
 };
-
-static inline u8 memory_read(struct memory_t mem, u16 addr)
-{
-    return mem.vtable->read(mem.ptr, addr);
-}
-
-static inline void memory_write(struct memory_t mem, u16 addr, u8 value)
-{
-    mem.vtable->write(mem.ptr, addr, value);
-}
-
-static inline void memory_deinit(struct memory_t mem)
-{
-    mem.vtable->deinit(mem.ptr);
-}
 
 static u16 memory_read_u16(struct memory_t mem, u16 addr)
 {
@@ -51,6 +40,7 @@ struct cpu_t cpu_init()
         .x = 0,
         .y = 0,
         .p = 0,
+        .irq_disable = true,
     };
 }
 
@@ -77,17 +67,14 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
 
     switch (opcode) {
         default:
-            fprintf(stderr, "Invalid opcode ($%02X)", opcode);
+            fprintf(stderr, "Invalid opcode ($%02X)\n", opcode);
             exit(1);
     }
 }
 
-static constexpr u16 NMI_LOC = 0xFFFA;
-static constexpr u16 RES_LOC = 0xFFFC;
-static constexpr u16 IRQ_LOC = 0xFFFE;
-
 void cpu_reset(struct cpu_t cpu[static 1], struct memory_t mem)
 {
     cpu->pc = memory_read_u16(mem, RES_LOC);
-    printf("reset vector: $%04X\n", cpu->pc);
+    cpu->irq_disable = true;
+    cpu->cycles += 7;
 }

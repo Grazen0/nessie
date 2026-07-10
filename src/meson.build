@@ -1,15 +1,18 @@
 nessie_sources = [
-  'cpu.c',
-  'error.c',
-  'ines.c',
+  'frontend/common.c',
   'main.c',
-  'mapper.c',
-  'nes.c',
-  'util.c',
 ]
 
 nessie_dependencies = [
+  core_dep,
 ]
+
+frontend = get_option('frontend')
+
+if frontend == 'raylib'
+  nessie_sources += files('frontend/raylib.c')
+  nessie_dependencies += dependency('raylib')
+endif
 
 nessie_exe = executable(
   'nessie',

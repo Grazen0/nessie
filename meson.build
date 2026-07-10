@@ -10,5 +10,5 @@ project(
 )
 
 subdir('disasm')
+subdir('core')
 subdir('src')
-

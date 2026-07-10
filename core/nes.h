@@ -13,6 +13,8 @@
 
 static constexpr size_t NES_RAM_SIZE = 0x800;
 
+static constexpr size_t NES_CLK_FREQ_HZ = 1'789'773;
+
 struct nes_t {
     struct cpu_t cpu;
     struct mapper_t mapper;
@@ -43,5 +45,7 @@ void nes_destroy(struct nes_t *nes);
                                             const struct ines_t ines[static 1]);
 
 void nes_reset(struct nes_t nes[static 1]);
+
+u64 nes_dispatch_cpu(struct nes_t nes[static 1]);
 
 #endif

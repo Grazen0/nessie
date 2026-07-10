@@ -15,6 +15,21 @@ struct memory_t {
     const struct memory_vtable_t *vtable;
 };
 
+static inline u8 memory_read(struct memory_t mem, u16 addr)
+{
+    return mem.vtable->read(mem.ptr, addr);
+}
+
+static inline void memory_write(struct memory_t mem, u16 addr, u8 value)
+{
+    mem.vtable->write(mem.ptr, addr, value);
+}
+
+static inline void memory_deinit(struct memory_t mem)
+{
+    mem.vtable->deinit(mem.ptr);
+}
+
 struct cpu_t {
     size_t cycles;
     u16 pc;
@@ -23,6 +38,7 @@ struct cpu_t {
     u8 x;
     u8 y;
     u8 p;
+    bool irq_disable; // interrupt disable
 };
 
 struct cpu_t cpu_init();

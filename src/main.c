@@ -1,5 +1,7 @@
 #include "error.h"
+#include "frontend/common.h"
 #include "nes.h"
+#include "scheduler.h"
 #include "util.h"
 #include <assert.h>
 #include <getopt.h>
@@ -92,6 +94,7 @@ int main(int argc, char *argv[static argc + 1])
 
     struct nes_t nes = {};
     if (!nes_init(&nes)) {
+        fprintf(stderr, "Error initializing emulator.");
         retval = EXIT_FAILURE;
         goto cleanup_1;
     }
@@ -108,6 +111,12 @@ int main(int argc, char *argv[static argc + 1])
     }
 
     nes_reset(&nes);
+
+    struct sched_t sched = {};
+    sched_init(&sched);
+
+    printf("Using frontend '%s'\n", frontend.name);
+    frontend.run(&nes, &sched);
 
 cleanup_2:
     nes_deinit(&nes);

@@ -5,6 +5,7 @@
 #include "ines.h"
 #include "util.h"
 #include <stddef.h>
+#include <stdlib.h>
 
 struct mapper_vtable_t {
     void (*deinit)(void *ptr);
@@ -18,11 +19,26 @@ struct mapper_t {
     const struct mapper_vtable_t *vtable;
 };
 
-u8 mapper_read(struct mapper_t mapper, u16 addr);
+static inline void mapper_deinit(struct mapper_t mapper)
+{
+    mapper.vtable->deinit(mapper.ptr);
+    free(mapper.ptr);
+}
 
-void mapper_write(struct mapper_t mapper, u16 addr, u8 value);
+static inline u8 mapper_read(struct mapper_t mapper, u16 addr)
+{
+    return mapper.vtable->read(mapper.ptr, addr);
+}
 
-void mapper_deinit(struct mapper_t mapper);
+static inline void mapper_write(struct mapper_t mapper, u16 addr, u8 value)
+{
+    mapper.vtable->write(mapper.ptr, addr, value);
+}
+
+static inline u8 mapper_read_ppu(struct mapper_t mapper, u16 addr)
+{
+    return mapper.vtable->read_ppu(mapper.ptr, addr);
+}
 
 [[nodiscard]] enum nes_error_t
 mapper_from_rom(const struct ines_t ines[static 1],
