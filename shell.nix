@@ -6,4 +6,7 @@ pkgs.mkShell {
     pkg-config
     raylib
   ];
+
+  hardeningDisable = [ "fortify" ];
+
 }
