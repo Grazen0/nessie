@@ -3,8 +3,20 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #define ARRAY_LEN(ARR) (sizeof(ARR) / sizeof(ARR[0]))
+
+#define PANIC(...)                                                          \
+    do {                                                                    \
+        __VA_OPT__(fprintf(stderr, "panic (%s:%d): ", __FILE__, __LINE__);) \
+        __VA_OPT__(if (0))                                                  \
+        fprintf(stderr, "panic (%s:%d)", __FILE__, __LINE__);               \
+        __VA_OPT__(fprintf(stderr, __VA_ARGS__);)                           \
+        fputc('\n', stderr);                                                \
+        abort();                                                            \
+    } while (0)
 
 typedef uint64_t u64;
 typedef uint32_t u32;
@@ -22,5 +34,13 @@ struct span_t {
 };
 
 void *memdup(const void *src, size_t n);
+
+static inline void set_bits(u8 num[static 1], u8 mask, bool value)
+{
+    if (value)
+        *num |= mask;
+    else
+        *num &= ~mask;
+}
 
 #endif

@@ -29,6 +29,8 @@ static u8 nes_read_mem(struct nes_t nes[static 1], u16 addr)
                 return nes->ppuaddr;
             case 7:
                 return nes->ppudata;
+            default:
+                unreachable();
         }
     }
 
@@ -40,6 +42,8 @@ static u8 nes_read_mem(struct nes_t nes[static 1], u16 addr)
                 return nes->joy1;
             case 0x17:
                 return nes->joy2;
+            default:
+                PANIC("read from $%04X", addr);
         }
     }
 
@@ -82,6 +86,8 @@ static void nes_write_mem(struct nes_t nes[static 1], u16 addr, u8 value)
             case 7:
                 nes->ppudata = value;
                 return;
+            default:
+                unreachable();
         }
     }
 
@@ -96,6 +102,8 @@ static void nes_write_mem(struct nes_t nes[static 1], u16 addr, u8 value)
             case 0x17:
                 nes->joy2 = value;
                 return;
+            default:
+                PANIC("write to $%04X (value = $%02X)", addr, value);
         }
     }
 
@@ -112,8 +120,12 @@ struct nes_t *nes_init(struct nes_t *nes)
         if (ram == nullptr)
             return nullptr;
 
+        struct cpu_t cpu = {};
+        if (!cpu_init(&cpu))
+            return nullptr;
+
         *nes = (struct nes_t){
-            .cpu = cpu_init(),
+            .cpu = cpu,
             .mapper = {},
             .mapper_init = false,
             .ram = ram,

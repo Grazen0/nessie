@@ -3,6 +3,7 @@
 
 #include "util.h"
 #include <stddef.h>
+#include <stdlib.h>
 
 struct memory_vtable_t {
     void (*deinit)(void *ptr);
@@ -28,6 +29,7 @@ static inline void memory_write(struct memory_t mem, u16 addr, u8 value)
 static inline void memory_deinit(struct memory_t mem)
 {
     mem.vtable->deinit(mem.ptr);
+    free(mem.ptr);
 }
 
 struct cpu_t {
@@ -37,14 +39,17 @@ struct cpu_t {
     u8 a;
     u8 x;
     u8 y;
-    u8 p;
-    bool irq_disable; // interrupt disable
+    u8 sr;
 };
 
-struct cpu_t cpu_init();
+struct cpu_t *cpu_init(struct cpu_t *cpu);
 
 void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem);
 
 void cpu_reset(struct cpu_t cpu[static 1], struct memory_t mem);
+
+bool cpu_request_irq(struct cpu_t cpu[static 1], struct memory_t mem);
+
+void cpu_request_nmi(struct cpu_t cpu[static 1], struct memory_t mem);
 
 #endif
