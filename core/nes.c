@@ -26,6 +26,17 @@ enum ppuctrl_t : u8 {
     PPUCTRL_VBLANK_NMI_EN = 1 << 7,
 };
 
+enum ppumask_t : u8 {
+    PPUMASK_GREYSCALE = 1 << 0,
+    PPUMASK_SHOW_BG_LEFT = 1 << 1,
+    PPUMASK_SHOW_SPRS_LEFT = 1 << 2,
+    PPUMASK_BG_EN = 1 << 3,
+    PPUMASK_SPR_EN = 1 << 4,
+    PPUMASK_EMP_RED = 1 << 5,
+    PPUMASK_EMP_GREEN = 1 << 6,
+    PPUMASK_EMP_BLUE = 1 << 7,
+};
+
 enum ppustatus_t : u8 {
     PPUSTATUS_SPR_OF = 1 << 5,
     PPUSTATUS_SPR0_HIT = 1 << 6,
@@ -416,19 +427,11 @@ static_assert(DOTS_Y >= NES_SCREEN_HEIGHT);
 static constexpr size_t LINE_PRE_RENDER = DOTS_Y - 1;
 static constexpr size_t LINE_VBLANK = 241;
 
-static void nes_update_scanout(struct nes_t nes[static 1])
+static void nes_update_scanout_bg(struct nes_t nes[static 1], size_t nt_addr,
+                                  u8 col_mask)
 {
-    assert((nes->ppuctrl & PPUCTRL_SPR_SIZE) == 0 &&
-           "TODO: implement 8x16 sprites");
-
     size_t pat_tbl_addr =
         (nes->ppuctrl & PPUCTRL_BG_PAT_ADDR) == 0 ? 0x0000 : 0x1000;
-
-    size_t nt_addr = 0x2000 + (0x400 * (nes->ppuctrl & PPUCTRL_BASE_NT_ADDR));
-
-    // entry 0 of palette 0 is used as backdrop color
-    memset(nes->scanout_buf, nes->pal_ram[0],
-           NES_SCREEN_HEIGHT * sizeof(nes->scanout_buf[0]));
 
     for (size_t ty = 0; ty < 30; ++ty) {
         for (size_t tx = 0; tx < 32; ++tx) {
@@ -456,7 +459,8 @@ static void nes_update_scanout(struct nes_t nes[static 1])
 
                     if (entry != 0) {
                         size_t col = nes->pal_ram[(4 * pal) + entry];
-                        nes->scanout_buf[y_base + sy][x_base + sx] = col;
+                        nes->scanout_buf[y_base + sy][x_base + sx] =
+                            col & col_mask;
                     }
 
                     p0 <<= 1;
@@ -465,6 +469,23 @@ static void nes_update_scanout(struct nes_t nes[static 1])
             }
         }
     }
+}
+
+static void nes_update_scanout(struct nes_t nes[static 1])
+{
+    assert((nes->ppuctrl & PPUCTRL_SPR_SIZE) == 0 &&
+           "TODO: implement 8x16 sprites");
+
+    size_t nt_addr = 0x2000 + (0x400 * (nes->ppuctrl & PPUCTRL_BASE_NT_ADDR));
+
+    u8 col_mask = (nes->ppumask & PPUMASK_GREYSCALE) == 0 ? 0xFF : 0x30;
+
+    // entry 0 of palette 0 is used as backdrop color
+    memset(nes->scanout_buf, nes->pal_ram[0] & col_mask,
+           NES_SCREEN_HEIGHT * sizeof(nes->scanout_buf[0]));
+
+    if ((nes->ppumask & PPUMASK_BG_EN) != 0)
+        nes_update_scanout_bg(nes, nt_addr, col_mask);
 }
 
 u64 nes_dispatch_pixel(struct nes_t nes[static 1])
