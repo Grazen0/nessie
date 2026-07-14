@@ -41,7 +41,6 @@ struct nes_t {
     u8 ppudata_buf;
     u8 joy_strobe;
     u8 joy1;
-    u8 joy2;
     unsigned _BitInt(1) w;
     bool mapper_init;
 
@@ -216,7 +215,7 @@ static u8 nes_read_mem(struct nes_t nes[static 1], u16 addr)
                 return val;
             }
             case 0x4017:
-                return nes->joy2;
+                return 0x00;
             default:
                 PANIC("read from $%04X", addr);
         }
