@@ -3,6 +3,18 @@
 #include "util.h"
 #include <assert.h>
 #include <stddef.h>
+#include <stdlib.h>
+
+static u64 (*const DISPATCHERS[])(struct nes_t[static 1]) = {
+    nes_dispatch_cpu,
+    nes_dispatch_pixel,
+};
+
+static constexpr size_t SCHED_EVENT_COUNT = ARRAY_LEN(DISPATCHERS);
+
+struct sched_t {
+    u64 times[SCHED_EVENT_COUNT];
+};
 
 struct sched_t *sched_init(struct sched_t *sched)
 {
@@ -15,7 +27,25 @@ struct sched_t *sched_init(struct sched_t *sched)
     return sched;
 }
 
-u64 sched_next_time(const struct sched_t sched[static 1])
+struct sched_t *sched_create()
+{
+    return sched_init(calloc(1, sizeof(struct sched_t)));
+}
+
+void sched_deinit(struct sched_t *sched)
+{
+    if (sched != nullptr) {
+        *sched = (struct sched_t){};
+    }
+}
+
+void sched_destroy(struct sched_t *sched)
+{
+    sched_deinit(sched);
+    free(sched);
+}
+
+u64 sched_next_time(const struct sched_t *sched)
 {
     u64 min_time = sched->times[0];
 
@@ -27,13 +57,8 @@ u64 sched_next_time(const struct sched_t sched[static 1])
     return min_time;
 }
 
-void sched_dispatch(struct sched_t sched[static 1], struct nes_t nes[static 1])
+void sched_dispatch(struct sched_t *sched, struct nes_t nes[static 1])
 {
-    static u64 (*const DISPATCHERS[])(struct nes_t[static 1]) = {
-        nes_dispatch_cpu,
-    };
-    static_assert(ARRAY_LEN(DISPATCHERS) == SCHED_EVENT_COUNT);
-
     size_t next_ev = 0;
 
     for (size_t i = 1; i < SCHED_EVENT_COUNT; ++i) {
@@ -45,8 +70,8 @@ void sched_dispatch(struct sched_t sched[static 1], struct nes_t nes[static 1])
     sched->times[next_ev] += elapsed;
 }
 
-void sched_dispatch_until(struct sched_t sched[static 1],
-                          struct nes_t nes[static 1], u64 until)
+void sched_dispatch_until(struct sched_t *sched, struct nes_t nes[static 1],
+                          u64 until)
 {
     while (sched_next_time(sched) < until)
         sched_dispatch(sched, nes);

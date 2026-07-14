@@ -4,6 +4,7 @@
 #include "util.h"
 #include <assert.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 struct nrom_mapper_t {
@@ -70,12 +71,44 @@ static void nrom_mapper_write_v(void *ptr, [[maybe_unused]] u16 addr,
     [[maybe_unused]] struct nrom_mapper_t *mapper = ptr;
 }
 
-static u8 nrom_mapper_read_ppu_v(void *ptr, u16 addr)
+static struct mapper_ppu_read_t nrom_mapper_read_ppu_v(void *ptr, u16 addr)
 {
     struct nrom_mapper_t *mapper = ptr;
 
-    assert(addr < 0x2000);
-    return mapper->chr_rom[addr];
+    struct mapper_ppu_read_t result = {};
+
+    assert(addr < 0x3000);
+
+    if (addr < 0x2000) {
+        result.kind = MAPPER_READ_DIRECT;
+        result.direct_value = mapper->chr_rom[addr];
+    } else {
+        result.kind = MAPPER_READ_VRAM;
+        result.vram_addr =
+            (addr - 0x2000) % 0x800; // TODO: come back to mirroring later
+    }
+
+    return result;
+}
+
+static struct mapper_ppu_write_t nrom_mapper_write_ppu_v(void *ptr, u16 addr,
+                                                         u8 value)
+{
+    [[maybe_unused]] struct nrom_mapper_t *mapper = ptr;
+
+    struct mapper_ppu_write_t result = {};
+
+    assert(addr < 0x3000);
+
+    if (addr < 0x2000) {
+        result.kind = MAPPER_WRITE_DIRECT;
+    } else {
+        result.kind = MAPPER_WRITE_VRAM;
+        result.vram.addr = (addr - 0x2000) % 0x800;
+        result.vram.value = value;
+    }
+
+    return result;
 }
 
 static const struct mapper_vtable_t NROM_MAPPER_VTABLE = {
@@ -83,6 +116,7 @@ static const struct mapper_vtable_t NROM_MAPPER_VTABLE = {
     .read = nrom_mapper_read_v,
     .write = nrom_mapper_write_v,
     .read_ppu = nrom_mapper_read_ppu_v,
+    .write_ppu = nrom_mapper_write_ppu_v,
 };
 
 enum nes_error_t mapper_from_rom(const struct ines_t ines[static 1],

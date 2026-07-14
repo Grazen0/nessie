@@ -2,7 +2,6 @@
 #include "util.h"
 #include <assert.h>
 #include <stdckdint.h>
-#include <stdio.h>
 
 static constexpr u16 NMI_LOC = 0xFFFA;
 static constexpr u16 RES_LOC = 0xFFFC;
@@ -57,6 +56,7 @@ static u16 cpu_read_zpg_u16(struct cpu_t cpu[static 1], struct memory_t mem,
 struct cpu_t *cpu_init(struct cpu_t *cpu)
 {
     *cpu = (struct cpu_t){};
+    cpu->p = 1 << 5;
     return cpu;
 }
 
@@ -73,7 +73,7 @@ static void cpu_st_push(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_st_push_u16(struct cpu_t cpu[static 1], struct memory_t mem,
-                            u8 value)
+                            u16 value)
 {
     cpu_st_push(cpu, mem, (value >> 8) & 0xFF);
     cpu_st_push(cpu, mem, value & 0xFF);
@@ -86,7 +86,7 @@ static u8 cpu_st_pull(struct cpu_t cpu[static 1], struct memory_t mem)
     return cpu_read_mem(cpu, mem, cpu_sp(cpu));
 }
 
-static u8 cpu_st_pull_u16(struct cpu_t cpu[static 1], struct memory_t mem)
+static u16 cpu_st_pull_u16(struct cpu_t cpu[static 1], struct memory_t mem)
 {
     u16 lo = cpu_st_pull(cpu, mem);
     u16 hi = cpu_st_pull(cpu, mem);
@@ -226,8 +226,8 @@ static void cpu_instr_ora(struct cpu_t cpu[static 1], struct memory_t mem,
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     cpu->a |= cpu_read_operand(cpu, mem, op);
 
-    set_bits(&cpu->sr, FLAG_N, (cpu->a & 0x80) != 0);
-    set_bits(&cpu->sr, FLAG_Z, cpu->a == 0);
+    set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
 }
 
 static void cpu_instr_and(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -236,8 +236,8 @@ static void cpu_instr_and(struct cpu_t cpu[static 1], struct memory_t mem,
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     cpu->a &= cpu_read_operand(cpu, mem, op);
 
-    set_bits(&cpu->sr, FLAG_N, (cpu->a & 0x80) != 0);
-    set_bits(&cpu->sr, FLAG_Z, cpu->a == 0);
+    set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
 }
 
 static void cpu_instr_eor(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -246,8 +246,8 @@ static void cpu_instr_eor(struct cpu_t cpu[static 1], struct memory_t mem,
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     cpu->a ^= cpu_read_operand(cpu, mem, op);
 
-    set_bits(&cpu->sr, FLAG_N, (cpu->a & 0x80) != 0);
-    set_bits(&cpu->sr, FLAG_Z, cpu->a == 0);
+    set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
 }
 
 static void cpu_instr_adc(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -261,15 +261,15 @@ static void cpu_instr_adc(struct cpu_t cpu[static 1], struct memory_t mem,
     bool carry = ckd_add(&cpu->a, cpu->a, rhs);
     bool overflow = ckd_add(&a_signed, a_signed, (i8)rhs);
 
-    if ((cpu->sr & FLAG_C) != 0) {
+    if ((cpu->p & FLAG_C) != 0) {
         carry = ckd_add(&cpu->a, cpu->a, 1) || carry;
         overflow = ckd_add(&a_signed, a_signed, 1) || overflow;
     }
 
-    set_bits(&cpu->sr, FLAG_N, (cpu->a & 0x80) != 0);
-    set_bits(&cpu->sr, FLAG_Z, cpu->a == 0);
-    set_bits(&cpu->sr, FLAG_C, carry);
-    set_bits(&cpu->sr, FLAG_V, overflow);
+    set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
+    set_bits(&cpu->p, FLAG_C, carry);
+    set_bits(&cpu->p, FLAG_V, overflow);
 }
 
 static void cpu_instr_sta(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -285,8 +285,8 @@ static void cpu_instr_lda(struct cpu_t cpu[static 1], struct memory_t mem,
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     cpu->a = cpu_read_operand(cpu, mem, op);
 
-    set_bits(&cpu->sr, FLAG_N, (cpu->a & 0x80) != 0);
-    set_bits(&cpu->sr, FLAG_Z, cpu->a == 0);
+    set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
 }
 
 static void cpu_instr_cmp(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -296,20 +296,11 @@ static void cpu_instr_cmp(struct cpu_t cpu[static 1], struct memory_t mem,
     u8 rhs = cpu_read_operand(cpu, mem, op);
 
     u8 a_cpy = cpu->a;
-    i8 a_signed = (i8)a_cpy;
-
     bool borrow = ckd_sub(&a_cpy, a_cpy, rhs);
-    bool overflow = ckd_sub(&a_signed, a_signed, (i8)rhs);
 
-    if ((cpu->sr & FLAG_C) == 0) {
-        borrow = ckd_sub(&a_cpy, a_cpy, 1) || borrow;
-        overflow = ckd_sub(&a_signed, a_signed, 1) || overflow;
-    }
-
-    set_bits(&cpu->sr, FLAG_N, (a_cpy & 0x80) != 0);
-    set_bits(&cpu->sr, FLAG_Z, a_cpy == 0);
-    set_bits(&cpu->sr, FLAG_C, !borrow);
-    set_bits(&cpu->sr, FLAG_V, overflow);
+    set_bits(&cpu->p, FLAG_N, (a_cpy & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, a_cpy == 0);
+    set_bits(&cpu->p, FLAG_C, !borrow);
 }
 
 static void cpu_instr_cpx(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -321,9 +312,9 @@ static void cpu_instr_cpx(struct cpu_t cpu[static 1], struct memory_t mem,
     u8 x_cpy = cpu->x;
     bool borrow = ckd_sub(&x_cpy, x_cpy, rhs);
 
-    set_bits(&cpu->sr, FLAG_N, (x_cpy & 0x80) != 0);
-    set_bits(&cpu->sr, FLAG_Z, x_cpy == 0);
-    set_bits(&cpu->sr, FLAG_C, !borrow);
+    set_bits(&cpu->p, FLAG_N, (x_cpy & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, x_cpy == 0);
+    set_bits(&cpu->p, FLAG_C, !borrow);
 }
 
 static void cpu_instr_cpy(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -335,9 +326,9 @@ static void cpu_instr_cpy(struct cpu_t cpu[static 1], struct memory_t mem,
     u8 y_cpy = cpu->y;
     bool borrow = ckd_sub(&y_cpy, y_cpy, rhs);
 
-    set_bits(&cpu->sr, FLAG_N, (y_cpy & 0x80) != 0);
-    set_bits(&cpu->sr, FLAG_Z, y_cpy == 0);
-    set_bits(&cpu->sr, FLAG_C, !borrow);
+    set_bits(&cpu->p, FLAG_N, (y_cpy & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, y_cpy == 0);
+    set_bits(&cpu->p, FLAG_C, !borrow);
 }
 
 static void cpu_instr_sbc(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -348,18 +339,18 @@ static void cpu_instr_sbc(struct cpu_t cpu[static 1], struct memory_t mem,
 
     i8 a_signed = (i8)cpu->a;
 
-    bool carry = ckd_sub(&cpu->a, cpu->a, rhs);
+    bool borrow = ckd_sub(&cpu->a, cpu->a, rhs);
     bool overflow = ckd_sub(&a_signed, a_signed, (i8)rhs);
 
-    if ((cpu->sr & FLAG_C) == 0) {
-        carry = ckd_sub(&cpu->a, cpu->a, 1) || carry;
+    if ((cpu->p & FLAG_C) == 0) {
+        borrow = ckd_sub(&cpu->a, cpu->a, 1) || borrow;
         overflow = ckd_sub(&a_signed, a_signed, 1) || overflow;
     }
 
-    set_bits(&cpu->sr, FLAG_N, (cpu->a & 0x80) != 0);
-    set_bits(&cpu->sr, FLAG_Z, cpu->a == 0);
-    set_bits(&cpu->sr, FLAG_C, !carry);
-    set_bits(&cpu->sr, FLAG_V, overflow);
+    set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
+    set_bits(&cpu->p, FLAG_C, !borrow);
+    set_bits(&cpu->p, FLAG_V, overflow);
 }
 
 static void cpu_instr_asl(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -373,9 +364,9 @@ static void cpu_instr_asl(struct cpu_t cpu[static 1], struct memory_t mem,
 
     cpu_write_operand(cpu, mem, op, val_new);
 
-    set_bits(&cpu->sr, FLAG_N, (val_new & 0x80) != 0);
-    set_bits(&cpu->sr, FLAG_Z, val_new == 0);
-    set_bits(&cpu->sr, FLAG_C, (val & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_N, (val_new & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, val_new == 0);
+    set_bits(&cpu->p, FLAG_C, (val & 0x80) != 0);
 }
 
 static void cpu_instr_lsr(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -389,9 +380,9 @@ static void cpu_instr_lsr(struct cpu_t cpu[static 1], struct memory_t mem,
 
     cpu_write_operand(cpu, mem, op, val_new);
 
-    set_bits(&cpu->sr, FLAG_N, false);
-    set_bits(&cpu->sr, FLAG_Z, val_new == 0);
-    set_bits(&cpu->sr, FLAG_C, (val & 1) != 0);
+    set_bits(&cpu->p, FLAG_N, false);
+    set_bits(&cpu->p, FLAG_Z, val_new == 0);
+    set_bits(&cpu->p, FLAG_C, (val & 1) != 0);
 }
 
 static void cpu_instr_rol(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -400,15 +391,15 @@ static void cpu_instr_rol(struct cpu_t cpu[static 1], struct memory_t mem,
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     u8 val = cpu_read_operand(cpu, mem, op);
 
-    u8 in_bit = (cpu->sr & FLAG_C) != 0 ? 1 : 0;
+    u8 in_bit = (cpu->p & FLAG_C) != 0 ? 1 : 0;
     u8 val_new = (val << 1) | in_bit;
     ++cpu->cycles;
 
     cpu_write_operand(cpu, mem, op, val_new);
 
-    set_bits(&cpu->sr, FLAG_N, (val_new & 0x80) != 0);
-    set_bits(&cpu->sr, FLAG_Z, val_new == 0);
-    set_bits(&cpu->sr, FLAG_C, (val & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_N, (val_new & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, val_new == 0);
+    set_bits(&cpu->p, FLAG_C, (val & 0x80) != 0);
 }
 
 static void cpu_instr_ror(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -417,15 +408,15 @@ static void cpu_instr_ror(struct cpu_t cpu[static 1], struct memory_t mem,
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     u8 val = cpu_read_operand(cpu, mem, op);
 
-    u8 in_bit = (cpu->sr & FLAG_C) != 0 ? 1 : 0;
+    u8 in_bit = (cpu->p & FLAG_C) != 0 ? 1 : 0;
     u8 val_new = (val >> 1) | (in_bit << 7);
     ++cpu->cycles;
 
     cpu_write_operand(cpu, mem, op, val_new);
 
-    set_bits(&cpu->sr, FLAG_N, (val_new & 0x80) != 0);
-    set_bits(&cpu->sr, FLAG_Z, val_new == 0);
-    set_bits(&cpu->sr, FLAG_C, (val & 1) != 0);
+    set_bits(&cpu->p, FLAG_N, (val_new & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, val_new == 0);
+    set_bits(&cpu->p, FLAG_C, (val & 1) != 0);
 }
 
 static void cpu_instr_stx(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -435,14 +426,21 @@ static void cpu_instr_stx(struct cpu_t cpu[static 1], struct memory_t mem,
     cpu_write_operand(cpu, mem, op, cpu->x);
 }
 
+static void cpu_instr_sty(struct cpu_t cpu[static 1], struct memory_t mem,
+                          enum opkind_t op_kind)
+{
+    struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
+    cpu_write_operand(cpu, mem, op, cpu->y);
+}
+
 static void cpu_instr_ldx(struct cpu_t cpu[static 1], struct memory_t mem,
                           enum opkind_t op_kind)
 {
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     cpu->x = cpu_read_operand(cpu, mem, op);
 
-    set_bits(&cpu->sr, FLAG_N, (cpu->x & 0x80) != 0);
-    set_bits(&cpu->sr, FLAG_Z, cpu->x == 0);
+    set_bits(&cpu->p, FLAG_N, (cpu->x & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, cpu->x == 0);
 }
 
 static void cpu_instr_ldy(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -451,8 +449,8 @@ static void cpu_instr_ldy(struct cpu_t cpu[static 1], struct memory_t mem,
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     cpu->y = cpu_read_operand(cpu, mem, op);
 
-    set_bits(&cpu->sr, FLAG_N, (cpu->y & 0x80) != 0);
-    set_bits(&cpu->sr, FLAG_Z, cpu->y == 0);
+    set_bits(&cpu->p, FLAG_N, (cpu->y & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, cpu->y == 0);
 }
 
 static void cpu_instr_dec(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -466,8 +464,8 @@ static void cpu_instr_dec(struct cpu_t cpu[static 1], struct memory_t mem,
 
     cpu_write_operand(cpu, mem, op, val);
 
-    set_bits(&cpu->sr, FLAG_N, (val & 0x80) != 0);
-    set_bits(&cpu->sr, FLAG_Z, val == 0);
+    set_bits(&cpu->p, FLAG_N, (val & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, val == 0);
 }
 
 static void cpu_instr_inc(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -481,8 +479,8 @@ static void cpu_instr_inc(struct cpu_t cpu[static 1], struct memory_t mem,
 
     cpu_write_operand(cpu, mem, op, val);
 
-    set_bits(&cpu->sr, FLAG_N, (val & 0x80) != 0);
-    set_bits(&cpu->sr, FLAG_Z, val == 0);
+    set_bits(&cpu->p, FLAG_N, (val & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, val == 0);
 }
 
 static void cpu_instr_jmp(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -492,12 +490,23 @@ static void cpu_instr_jmp(struct cpu_t cpu[static 1], struct memory_t mem,
     cpu->pc = op.addr;
 }
 
+static void cpu_instr_bit(struct cpu_t cpu[static 1], struct memory_t mem,
+                          enum opkind_t op_kind)
+{
+    struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
+    u8 val = cpu_read_operand(cpu, mem, op);
+
+    set_bits(&cpu->p, FLAG_V, (val & FLAG_V) != 0);
+    set_bits(&cpu->p, FLAG_N, (val & FLAG_N) != 0);
+    set_bits(&cpu->p, FLAG_Z, (val & cpu->a) == 0);
+}
+
 static void cpu_instr_bxx(struct cpu_t cpu[static 1], struct memory_t mem,
                           u8 flag, bool exp_val)
 {
     i8 offset = (i8)cpu_read_pc(cpu, mem);
 
-    bool flag_val = (cpu->sr & flag) != 0;
+    bool flag_val = (cpu->p & flag) != 0;
 
     if (flag_val == exp_val) {
         ++cpu->cycles;
@@ -511,46 +520,56 @@ static void cpu_instr_bxx(struct cpu_t cpu[static 1], struct memory_t mem,
 
 void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
 {
-    printf("pc = $%04X\n", cpu->pc);
+    u16 pc_start = cpu->pc;
     u8 opcode = cpu_read_pc(cpu, mem);
 
     switch (opcode) {
         case 0x18: // clc
-            set_bits(&cpu->sr, FLAG_C, false);
+            set_bits(&cpu->p, FLAG_C, false);
             ++cpu->cycles;
             break;
         case 0x38: // sec
-            set_bits(&cpu->sr, FLAG_C, true);
+            set_bits(&cpu->p, FLAG_C, true);
             ++cpu->cycles;
             break;
         case 0x58: // cli
-            set_bits(&cpu->sr, FLAG_I, false);
+            set_bits(&cpu->p, FLAG_I, false);
             ++cpu->cycles;
             break;
         case 0x78: // sei
-            set_bits(&cpu->sr, FLAG_I, true);
+            set_bits(&cpu->p, FLAG_I, true);
             ++cpu->cycles;
             break;
         case 0xB8: // clv
-            set_bits(&cpu->sr, FLAG_V, false);
+            set_bits(&cpu->p, FLAG_V, false);
             ++cpu->cycles;
             break;
         case 0xD8: // cld
-            set_bits(&cpu->sr, FLAG_D, false);
+            set_bits(&cpu->p, FLAG_D, false);
+            ++cpu->cycles;
+            break;
+        case 0xF8: // sed
+            set_bits(&cpu->p, FLAG_D, true);
             ++cpu->cycles;
             break;
 
         case 0x98: // tya
             cpu->a = cpu->y;
+            set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
+            set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
             ++cpu->cycles;
             break;
         case 0xA8: // tay
             cpu->y = cpu->a;
+            set_bits(&cpu->p, FLAG_N, (cpu->y & 0x80) != 0);
+            set_bits(&cpu->p, FLAG_Z, cpu->y == 0);
             ++cpu->cycles;
             break;
 
         case 0x8A: // txa
             cpu->a = cpu->x;
+            set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
+            set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
             ++cpu->cycles;
             break;
         case 0x9A: // txs
@@ -559,10 +578,14 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
             break;
         case 0xAA: // tax
             cpu->x = cpu->a;
+            set_bits(&cpu->p, FLAG_N, (cpu->x & 0x80) != 0);
+            set_bits(&cpu->p, FLAG_Z, cpu->x == 0);
             ++cpu->cycles;
             break;
         case 0xBA: // tsx
             cpu->x = cpu->s;
+            set_bits(&cpu->p, FLAG_N, (cpu->x & 0x80) != 0);
+            set_bits(&cpu->p, FLAG_Z, cpu->x == 0);
             ++cpu->cycles;
             break;
 
@@ -572,11 +595,11 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
 
         case 0x08: // php
             // p must be pushed with break flag and bit 5 set
-            cpu_st_push(cpu, mem, cpu->sr | FLAG_B | (1 << 5));
+            cpu_st_push(cpu, mem, cpu->p | FLAG_B | (1 << 5));
             ++cpu->cycles;
             break;
         case 0x28: // plp
-            cpu->sr = cpu_st_pull(cpu, mem);
+            cpu->p = (cpu_st_pull(cpu, mem) & ~FLAG_B) | (1 << 5);
             ++cpu->cycles;
             break;
         case 0x48: // pha
@@ -585,32 +608,34 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
             break;
         case 0x68: // pla
             cpu->a = cpu_st_pull(cpu, mem);
+            set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
+            set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
             ++cpu->cycles;
             break;
 
         case 0xE8: // inx
             ++cpu->x;
             ++cpu->cycles;
-            set_bits(&cpu->sr, FLAG_N, (cpu->x & 0x80) != 0);
-            set_bits(&cpu->sr, FLAG_Z, cpu->x == 0);
+            set_bits(&cpu->p, FLAG_N, (cpu->x & 0x80) != 0);
+            set_bits(&cpu->p, FLAG_Z, cpu->x == 0);
             break;
         case 0xCA: // dex
             --cpu->x;
             ++cpu->cycles;
-            set_bits(&cpu->sr, FLAG_N, (cpu->x & 0x80) != 0);
-            set_bits(&cpu->sr, FLAG_Z, cpu->x == 0);
+            set_bits(&cpu->p, FLAG_N, (cpu->x & 0x80) != 0);
+            set_bits(&cpu->p, FLAG_Z, cpu->x == 0);
             break;
         case 0xC8: // iny
             ++cpu->y;
             ++cpu->cycles;
-            set_bits(&cpu->sr, FLAG_N, (cpu->y & 0x80) != 0);
-            set_bits(&cpu->sr, FLAG_Z, cpu->y == 0);
+            set_bits(&cpu->p, FLAG_N, (cpu->y & 0x80) != 0);
+            set_bits(&cpu->p, FLAG_Z, cpu->y == 0);
             break;
         case 0x88: // dey
             --cpu->y;
             ++cpu->cycles;
-            set_bits(&cpu->sr, FLAG_N, (cpu->y & 0x80) != 0);
-            set_bits(&cpu->sr, FLAG_Z, cpu->y == 0);
+            set_bits(&cpu->p, FLAG_N, (cpu->y & 0x80) != 0);
+            set_bits(&cpu->p, FLAG_Z, cpu->y == 0);
             break;
 
         case 0x20: // jsr
@@ -622,10 +647,10 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
 
         case 0x00: // brk
             cpu_st_push_u16(cpu, mem, cpu->pc);
-            cpu_st_push(cpu, mem, (cpu->sr & ~FLAG_B) | (1 << 5));
+            cpu_st_push(cpu, mem, cpu->p | FLAG_B | (1 << 5));
 
             cpu->pc = cpu_read_mem_u16(cpu, mem, IRQ_LOC);
-            set_bits(&cpu->sr, FLAG_I, false);
+            set_bits(&cpu->p, FLAG_I, true);
 
             ++cpu->cycles;
             break;
@@ -636,11 +661,14 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
             break;
 
         case 0x40: // rti
-            cpu->sr = cpu_st_pull(cpu, mem);
+            cpu->p = (cpu_st_pull(cpu, mem) & ~FLAG_B) | (1 << 5);
             cpu->pc = cpu_st_pull_u16(cpu, mem);
             break;
 
             // clang-format off
+        case 0x24: cpu_instr_bit(cpu, mem, OP_ZPG); break;
+        case 0x2C: cpu_instr_bit(cpu, mem, OP_ABS); break;
+
         case 0x4C: cpu_instr_jmp(cpu, mem, OP_ABS); break;
         case 0x6C: cpu_instr_jmp(cpu, mem, OP_IND); break;
 
@@ -756,6 +784,10 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
         case 0x76: cpu_instr_ror(cpu, mem, OP_ZPG_X); break;
         case 0x7E: cpu_instr_ror(cpu, mem, OP_ABS_X); break;
 
+        case 0x84: cpu_instr_sty(cpu, mem, OP_ZPG); break;
+        case 0x8C: cpu_instr_sty(cpu, mem, OP_ABS); break;
+        case 0x94: cpu_instr_sty(cpu, mem, OP_ZPG_X); break;
+
         case 0x86: cpu_instr_stx(cpu, mem, OP_ZPG); break;
         case 0x8E: cpu_instr_stx(cpu, mem, OP_ABS); break;
         case 0x96: cpu_instr_stx(cpu, mem, OP_ZPG_Y); break;
@@ -769,22 +801,23 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
         case 0xA0: cpu_instr_ldy(cpu, mem, OP_IMM); break;
         case 0xA4: cpu_instr_ldy(cpu, mem, OP_ZPG); break;
         case 0xAC: cpu_instr_ldy(cpu, mem, OP_ABS); break;
-        case 0xB4: cpu_instr_ldy(cpu, mem, OP_ZPG_Y); break;
-        case 0xBC: cpu_instr_ldy(cpu, mem, OP_ABS_Y); break;
+        case 0xB4: cpu_instr_ldy(cpu, mem, OP_ZPG_X); break;
+        case 0xBC: cpu_instr_ldy(cpu, mem, OP_ABS_X); break;
 
         case 0xC6: cpu_instr_dec(cpu, mem, OP_ZPG); break;
         case 0xCE: cpu_instr_dec(cpu, mem, OP_ABS); break;
-        case 0xD6: cpu_instr_dec(cpu, mem, OP_ZPG_Y); break;
-        case 0xDE: cpu_instr_dec(cpu, mem, OP_ABS_Y); break;
+        case 0xD6: cpu_instr_dec(cpu, mem, OP_ZPG_X); break;
+        case 0xDE: cpu_instr_dec(cpu, mem, OP_ABS_X); break;
 
         case 0xE6: cpu_instr_inc(cpu, mem, OP_ZPG); break;
         case 0xEE: cpu_instr_inc(cpu, mem, OP_ABS); break;
-        case 0xF6: cpu_instr_inc(cpu, mem, OP_ZPG_Y); break;
-        case 0xFE: cpu_instr_inc(cpu, mem, OP_ABS_Y); break;
+        case 0xF6: cpu_instr_inc(cpu, mem, OP_ZPG_X); break;
+        case 0xFE: cpu_instr_inc(cpu, mem, OP_ABS_X); break;
             // clang-format on
 
         default:
-            PANIC("Invalid opcode ($%02X)\n", opcode);
+            PANIC("Invalid opcode (pc = $%04X, opcode = $%02X)\n", pc_start,
+                  opcode);
     }
 }
 
@@ -792,20 +825,20 @@ void cpu_reset(struct cpu_t cpu[static 1], struct memory_t mem)
 {
     cpu->pc = cpu_read_mem_u16(cpu, mem, RES_LOC); // 2 cycles
     cpu->cycles += 5; // other reset sequence cycles
-    cpu->sr |= FLAG_I;
+    cpu->p |= FLAG_I;
 }
 
 bool cpu_request_irq(struct cpu_t cpu[static 1], struct memory_t mem)
 {
     // TODO: figure out cycle timing for this one
-    if ((cpu->sr & FLAG_I) != 0)
+    if ((cpu->p & FLAG_I) != 0)
         return false;
 
     cpu_st_push_u16(cpu, mem, cpu->pc);
-    cpu_st_push(cpu, mem, (cpu->sr & ~FLAG_B) | (1 << 5));
+    cpu_st_push(cpu, mem, (cpu->p & ~FLAG_B) | (1 << 5));
 
     cpu->pc = cpu_read_mem_u16(cpu, mem, IRQ_LOC);
-    set_bits(&cpu->sr, FLAG_I, false);
+    set_bits(&cpu->p, FLAG_I, true);
 
     ++cpu->cycles;
     return true;
@@ -815,10 +848,10 @@ void cpu_request_nmi(struct cpu_t cpu[static 1], struct memory_t mem)
 {
     // TODO: figure out cycle timing for this one
     cpu_st_push_u16(cpu, mem, cpu->pc);
-    cpu_st_push(cpu, mem, (cpu->sr & ~FLAG_B) | (1 << 5));
+    cpu_st_push(cpu, mem, (cpu->p & ~FLAG_B) | (1 << 5));
 
     cpu->pc = cpu_read_mem_u16(cpu, mem, NMI_LOC);
-    set_bits(&cpu->sr, FLAG_I, false);
+    set_bits(&cpu->p, FLAG_I, true);
 
     ++cpu->cycles;
 }

@@ -6,20 +6,21 @@
 #include <assert.h>
 #include <stddef.h>
 
-static constexpr size_t SCHED_EVENT_COUNT = 1;
-static_assert(SCHED_EVENT_COUNT > 0);
-
-struct sched_t {
-    u64 times[SCHED_EVENT_COUNT];
-};
+struct sched_t;
 
 struct sched_t *sched_init(struct sched_t *sched);
 
-u64 sched_next_time(const struct sched_t sched[static 1]);
+struct sched_t *sched_create();
 
-void sched_dispatch(struct sched_t sched[static 1], struct nes_t nes[static 1]);
+void sched_deinit(struct sched_t *sched);
 
-void sched_dispatch_until(struct sched_t sched[static 1],
-                          struct nes_t nes[static 1], u64 until);
+void sched_destroy(struct sched_t *sched);
+
+u64 sched_next_time(const struct sched_t *sched);
+
+void sched_dispatch(struct sched_t *sched, struct nes_t nes[static 1]);
+
+void sched_dispatch_until(struct sched_t *sched, struct nes_t nes[static 1],
+                          u64 until);
 
 #endif

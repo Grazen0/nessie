@@ -39,7 +39,7 @@ struct cpu_t {
     u8 a;
     u8 x;
     u8 y;
-    u8 sr;
+    u8 p;
 };
 
 struct cpu_t *cpu_init(struct cpu_t *cpu);

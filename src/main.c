@@ -102,7 +102,11 @@ int main(int argc, char *argv[static argc + 1])
     enum nes_error_t err = NES_OK;
 
     struct ines_t ines = {};
-    NES_TRY(ines_parse(rom_len, rom, &ines));
+    if ((err = ines_parse(rom_len, rom, &ines)) != NES_OK) {
+        fprintf(stderr, "Error: %s\n", nes_error_str(err));
+        retval = EXIT_FAILURE;
+        goto cleanup_2;
+    }
 
     if ((err = nes_load_rom(&nes, &ines)) != NES_OK) {
         fprintf(stderr, "Error: %s\n", nes_error_str(err));
@@ -112,12 +116,13 @@ int main(int argc, char *argv[static argc + 1])
 
     nes_reset(&nes);
 
-    struct sched_t sched = {};
-    sched_init(&sched);
+    struct sched_t *sched = sched_create();
+    assert(sched != nullptr);
 
     printf("Using frontend '%s'\n", frontend.name);
-    frontend.run(&nes, &sched);
+    frontend.run(&nes, sched);
 
+    sched_destroy(sched);
 cleanup_2:
     nes_deinit(&nes);
 cleanup_1:
