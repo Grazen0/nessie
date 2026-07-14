@@ -66,7 +66,7 @@ static void draw(struct nes_t nes[static 1], Texture2D tex, Color *pixels)
 static int run(struct nes_t nes[static 1], struct sched_t *sched)
 {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-    InitWindow(WINDOW_INIT_WIDTH, WINDOW_INIT_HEIGHT, "gemu");
+    InitWindow(WINDOW_INIT_WIDTH, WINDOW_INIT_HEIGHT, "nessie");
     SetTargetFPS(60);
     SetExitKey(KEY_NULL);
 
