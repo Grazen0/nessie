@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static constexpr size_t RAM_SIZE = 0x800;
 static constexpr size_t VRAM_SIZE = 0x800;
@@ -83,7 +84,17 @@ static void nes_write_ppu(struct nes_t nes[static 1], u16 addr, u8 value)
     }
 
     if (addr < 0x4000) {
-        nes->pal_ram[(addr - 0x4000) % NES_PAL_RAM_SIZE] = value;
+        u16 pal_addr = (addr - 0x4000) % NES_PAL_RAM_SIZE;
+
+        if ((pal_addr % 4) == 0) {
+            // entry 0s are shared between background and sprite palettes
+            // See https://www.nesdev.org/wiki/PPU_palettes#Palette_RAM
+            nes->pal_ram[pal_addr & 0x0F] = value;
+            nes->pal_ram[pal_addr | 0x10] = value;
+        } else {
+            nes->pal_ram[pal_addr] = value;
+        }
+
         return;
     }
 
@@ -415,6 +426,10 @@ static void nes_update_scanout(struct nes_t nes[static 1])
 
     size_t nt_addr = 0x2000 + (0x400 * (nes->ppuctrl & PPUCTRL_BASE_NT_ADDR));
 
+    // entry 0 of palette 0 is used as backdrop color
+    memset(nes->scanout_buf, nes->pal_ram[0],
+           NES_SCREEN_HEIGHT * sizeof(nes->scanout_buf[0]));
+
     for (size_t ty = 0; ty < 30; ++ty) {
         for (size_t tx = 0; tx < 32; ++tx) {
             size_t x_base = 8 * tx;
@@ -437,10 +452,12 @@ static void nes_update_scanout(struct nes_t nes[static 1])
                 for (size_t sx = 0; sx < 8; ++sx) {
                     u8 b0 = p0 >> 7;
                     u8 b1 = p1 >> 7;
-                    u8 col_idx = b0 | (b1 << 1);
+                    u8 entry = b0 | (b1 << 1);
 
-                    size_t col = nes->pal_ram[(4 * pal) + col_idx];
-                    nes->scanout_buf[y_base + sy][x_base + sx] = col;
+                    if (entry != 0) {
+                        size_t col = nes->pal_ram[(4 * pal) + entry];
+                        nes->scanout_buf[y_base + sy][x_base + sx] = col;
+                    }
 
                     p0 <<= 1;
                     p1 <<= 1;
