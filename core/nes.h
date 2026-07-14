@@ -1,10 +1,8 @@
 #ifndef NESSIE_NES_H
 #define NESSIE_NES_H
 
-#include "cpu.h"
 #include "error.h"
 #include "ines.h"
-#include "mapper.h"
 #include "util.h"
 #include <assert.h>
 #include <stddef.h>
@@ -20,60 +18,40 @@ static constexpr float NES_SCREEN_RATIO =
 
 static constexpr size_t NES_PAL_RAM_SIZE = 32;
 
-struct nes_btns_t {
-    bool a;
-    bool b;
-    bool select;
-    bool start;
-    bool up;
-    bool down;
-    bool left;
-    bool right;
+enum nes_btn_t : u8 {
+    NES_BTN_A,
+    NES_BTN_B,
+    NES_BTN_SELECT,
+    NES_BTN_START,
+    NES_BTN_UP,
+    NES_BTN_DOWN,
+    NES_BTN_LEFT,
+    NES_BTN_RIGHT,
 };
 
-struct nes_t {
-    struct cpu_t cpu;
-    struct mapper_t mapper;
-    struct nes_btns_t btns;
-    size_t px;
-    size_t py;
-    u8 *ram;
-    u8 *vram;
-    u8 *oam;
-    u8 (*scanout_buf)[NES_SCREEN_WIDTH];
-    u16 ppuaddr;
-    u8 pal_ram[NES_PAL_RAM_SIZE];
-    u8 ppuctrl;
-    u8 ppumask;
-    u8 ppustatus;
-    u8 oamaddr;
-    u8 ppuscroll;
-    u8 ppudata_buf;
-    u8 oamdma;
-    u8 joy_strobe;
-    u8 joy1;
-    u8 joy2;
-    unsigned _BitInt(1) w;
-    bool mapper_init;
-};
+struct nes_t;
 
 struct nes_t *nes_init(struct nes_t *nes);
 
-struct nes_t *nes_create();
+[[nodiscard]] struct nes_t *nes_create();
 
 void nes_deinit(struct nes_t *nes);
 
 void nes_destroy(struct nes_t *nes);
 
-[[nodiscard]] enum nes_error_t nes_load_rom(struct nes_t nes[static 1],
+[[nodiscard]] enum nes_error_t nes_load_rom(struct nes_t *nes,
                                             const struct ines_t ines[static 1]);
 
-void nes_reset(struct nes_t nes[static 1]);
+void nes_reset(struct nes_t *nes);
 
-u64 nes_dispatch_cpu(struct nes_t nes[static 1]);
+void nes_set_btn(struct nes_t *nes, enum nes_btn_t btn, bool pressed);
 
-u64 nes_dispatch_pixel(struct nes_t nes[static 1]);
+u64 nes_dispatch_cpu(struct nes_t *nes);
 
-u8 nes_read_ppu(struct nes_t nes[static 1], u16 addr);
+u64 nes_dispatch_pixel(struct nes_t *nes);
+
+u8 nes_read_ppu(struct nes_t *nes, u16 addr);
+
+const u8 (*nes_get_scanout(const struct nes_t *nes))[NES_SCREEN_WIDTH];
 
 #endif

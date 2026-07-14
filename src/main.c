@@ -92,8 +92,8 @@ int main(int argc, char *argv[static argc + 1])
 
     int retval = EXIT_SUCCESS;
 
-    struct nes_t nes = {};
-    if (!nes_init(&nes)) {
+    struct nes_t *nes = nes_create();
+    if (nes == nullptr) {
         fprintf(stderr, "Error initializing emulator.");
         retval = EXIT_FAILURE;
         goto cleanup_1;
@@ -108,23 +108,23 @@ int main(int argc, char *argv[static argc + 1])
         goto cleanup_2;
     }
 
-    if ((err = nes_load_rom(&nes, &ines)) != NES_OK) {
+    if ((err = nes_load_rom(nes, &ines)) != NES_OK) {
         fprintf(stderr, "Error: %s\n", nes_error_str(err));
         retval = EXIT_FAILURE;
         goto cleanup_2;
     }
 
-    nes_reset(&nes);
+    nes_reset(nes);
 
     struct sched_t *sched = sched_create();
     assert(sched != nullptr);
 
     printf("Using frontend '%s'\n", frontend.name);
-    frontend.run(&nes, sched);
+    frontend.run(nes, sched);
 
     sched_destroy(sched);
 cleanup_2:
-    nes_deinit(&nes);
+    nes_destroy(nes);
 cleanup_1:
     free(rom);
 

@@ -10,6 +10,32 @@
 #include <stdlib.h>
 #include <string.h>
 
+struct nes_t {
+    struct cpu_t cpu;
+    struct mapper_t mapper;
+    enum nes_btn_t btns;
+    size_t px;
+    size_t py;
+    u8 *ram;
+    u8 *vram;
+    u8 *oam;
+    u8 (*scanout_buf)[NES_SCREEN_WIDTH];
+    u16 ppuaddr;
+    u8 pal_ram[NES_PAL_RAM_SIZE];
+    u8 ppuctrl;
+    u8 ppumask;
+    u8 ppustatus;
+    u8 oamaddr;
+    u8 ppuscroll;
+    u8 ppudata_buf;
+    u8 oamdma;
+    u8 joy_strobe;
+    u8 joy1;
+    u8 joy2;
+    unsigned _BitInt(1) w;
+    bool mapper_init;
+};
+
 static constexpr size_t RAM_SIZE = 0x800;
 static constexpr size_t VRAM_SIZE = 0x800;
 static constexpr size_t OAM_SIZE = 4ULL * 64;
@@ -55,7 +81,7 @@ enum joy_t : u8 {
     JOY_RIGHT = 1 << 7,
 };
 
-u8 nes_read_ppu(struct nes_t nes[static 1], u16 addr)
+u8 nes_read_ppu(struct nes_t *nes, u16 addr)
 {
     if (addr < 0x3F00) {
         assert(nes->mapper_init);
@@ -115,31 +141,7 @@ static void nes_write_ppu(struct nes_t nes[static 1], u16 addr, u8 value)
 
 static void nes_update_joy1(struct nes_t nes[static 1])
 {
-    nes->joy1 = 0;
-
-    if (nes->btns.a)
-        nes->joy1 |= JOY_A;
-
-    if (nes->btns.b)
-        nes->joy1 |= JOY_B;
-
-    if (nes->btns.select)
-        nes->joy1 |= JOY_SELECT;
-
-    if (nes->btns.start)
-        nes->joy1 |= JOY_START;
-
-    if (nes->btns.up)
-        nes->joy1 |= JOY_UP;
-
-    if (nes->btns.down)
-        nes->joy1 |= JOY_DOWN;
-
-    if (nes->btns.left)
-        nes->joy1 |= JOY_LEFT;
-
-    if (nes->btns.right)
-        nes->joy1 |= JOY_RIGHT;
+    nes->joy1 = nes->btns;
 }
 
 static void nes_inc_ppuaddr(struct nes_t nes[static 1])
@@ -380,7 +382,7 @@ void nes_destroy(struct nes_t *nes)
     free(nes);
 }
 
-enum nes_error_t nes_load_rom(struct nes_t nes[static 1],
+enum nes_error_t nes_load_rom(struct nes_t *nes,
                               const struct ines_t ines[static 1])
 {
     if (nes->mapper_init) {
@@ -424,13 +426,18 @@ static struct memory_t nes_as_memory(struct nes_t nes[static 1])
     };
 }
 
-void nes_reset(struct nes_t nes[static 1])
+void nes_reset(struct nes_t *nes)
 {
     struct memory_t mem = nes_as_memory(nes);
     cpu_reset(&nes->cpu, mem);
 }
 
-u64 nes_dispatch_cpu(struct nes_t nes[static 1])
+void nes_set_btn(struct nes_t *nes, enum nes_btn_t btn, bool pressed)
+{
+    set_bits(&nes->btns, 1 << btn, pressed);
+}
+
+u64 nes_dispatch_cpu(struct nes_t *nes)
 {
     u64 start_cycles = nes->cpu.cycles;
 
@@ -578,7 +585,7 @@ static void nes_update_scanout(struct nes_t nes[static 1])
         nes_update_scanout_sprs(nes, col_mask, PRIORITY_LOW);
 }
 
-u64 nes_dispatch_pixel(struct nes_t nes[static 1])
+u64 nes_dispatch_pixel(struct nes_t *nes)
 {
     if (++nes->px == DOTS_X) {
         nes->px = 0;
@@ -603,3 +610,6 @@ u64 nes_dispatch_pixel(struct nes_t nes[static 1])
 
     return PPU_CLK_RATIO;
 }
+
+const u8 (*nes_get_scanout(const struct nes_t *nes))
+    [NES_SCREEN_WIDTH] { return nes->scanout_buf; }

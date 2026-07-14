@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 
-static u64 (*const DISPATCHERS[])(struct nes_t[static 1]) = {
+static u64 (*const DISPATCHERS[])(struct nes_t *) = {
     nes_dispatch_cpu,
     nes_dispatch_pixel,
 };
@@ -57,7 +57,7 @@ u64 sched_next_time(const struct sched_t *sched)
     return min_time;
 }
 
-void sched_dispatch(struct sched_t *sched, struct nes_t nes[static 1])
+void sched_dispatch(struct sched_t *sched, struct nes_t *nes)
 {
     size_t next_ev = 0;
 
@@ -70,8 +70,7 @@ void sched_dispatch(struct sched_t *sched, struct nes_t nes[static 1])
     sched->times[next_ev] += elapsed;
 }
 
-void sched_dispatch_until(struct sched_t *sched, struct nes_t nes[static 1],
-                          u64 until)
+void sched_dispatch_until(struct sched_t *sched, struct nes_t *nes, u64 until)
 {
     while (sched_next_time(sched) < until)
         sched_dispatch(sched, nes);

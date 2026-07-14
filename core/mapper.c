@@ -45,7 +45,7 @@ err_cleanup_1:
     return nullptr;
 }
 
-static struct nrom_mapper_t *
+[[nodiscard]] static struct nrom_mapper_t *
 nrom_mapper_create(size_t prg_rom_len, const u8 prg_rom[static prg_rom_len],
                    size_t chr_rom_len, const u8 chr_rom[static chr_rom_len])
 {

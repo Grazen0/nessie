@@ -8,12 +8,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static void update_pixels(struct nes_t nes[static 1], Texture tex,
+static void update_pixels(struct nes_t *nes, Texture tex,
                           Color pixels[static tex.width * tex.height])
 {
+    auto scanout = nes_get_scanout(nes);
+
     for (size_t y = 0; y < NES_SCREEN_HEIGHT; ++y) {
         for (size_t x = 0; x < NES_SCREEN_WIDTH; ++x) {
-            size_t col = nes->scanout_buf[y][x];
+            size_t col = scanout[y][x];
             const u8 *rgb = &DISPLAY_COLORS[3 * col];
             pixels[(y * tex.width) + x] = (Color){rgb[0], rgb[1], rgb[2], 255};
         }
@@ -47,7 +49,7 @@ Rectangle fit_rect_to_ratio(float cx, float cy, float cw, float ch, float ratio)
     return (Rectangle){.x = cx, .y = cy, .width = cw, .height = ch};
 }
 
-static void draw(struct nes_t nes[static 1], Texture2D tex, Color *pixels)
+static void draw(struct nes_t *nes, Texture2D tex, Color *pixels)
 {
     update_pixels(nes, tex, pixels);
     UpdateTexture(tex, pixels);
@@ -63,7 +65,7 @@ static void draw(struct nes_t nes[static 1], Texture2D tex, Color *pixels)
     EndDrawing();
 }
 
-static int run(struct nes_t nes[static 1], struct sched_t *sched)
+static int run(struct nes_t *nes, struct sched_t *sched)
 {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     InitWindow(WINDOW_INIT_WIDTH, WINDOW_INIT_HEIGHT, "nessie");
@@ -89,14 +91,14 @@ static int run(struct nes_t nes[static 1], struct sched_t *sched)
     while (!WindowShouldClose()) {
         long double frame_start = GetTime();
 
-        nes->btns.start = IsKeyDown(KEY_ENTER);
-        nes->btns.select = IsKeyDown(KEY_SPACE);
-        nes->btns.up = IsKeyDown(KEY_UP);
-        nes->btns.down = IsKeyDown(KEY_DOWN);
-        nes->btns.left = IsKeyDown(KEY_LEFT);
-        nes->btns.right = IsKeyDown(KEY_RIGHT);
-        nes->btns.a = IsKeyDown(KEY_X);
-        nes->btns.b = IsKeyDown(KEY_Z);
+        nes_set_btn(nes, NES_BTN_A, IsKeyDown(KEY_X));
+        nes_set_btn(nes, NES_BTN_B, IsKeyDown(KEY_Z));
+        nes_set_btn(nes, NES_BTN_SELECT, IsKeyDown(KEY_SPACE));
+        nes_set_btn(nes, NES_BTN_START, IsKeyDown(KEY_ENTER));
+        nes_set_btn(nes, NES_BTN_UP, IsKeyDown(KEY_UP));
+        nes_set_btn(nes, NES_BTN_DOWN, IsKeyDown(KEY_DOWN));
+        nes_set_btn(nes, NES_BTN_LEFT, IsKeyDown(KEY_LEFT));
+        nes_set_btn(nes, NES_BTN_RIGHT, IsKeyDown(KEY_RIGHT));
 
         long double cur_time = frame_start - start;
         u64 cur_time_clk = (u64)(cur_time * NES_MASTER_CLK_FREQ);

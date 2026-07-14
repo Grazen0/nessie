@@ -12,7 +12,7 @@ extern const u8 DISPLAY_COLORS[];
 
 struct frontend_t {
     const char *name;
-    int (*run)(struct nes_t[static 1], struct sched_t *);
+    int (*run)(struct nes_t *, struct sched_t *);
 };
 
 extern const struct frontend_t frontend;
