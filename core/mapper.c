@@ -19,26 +19,30 @@ nrom_mapper_init(struct nrom_mapper_t *mapper, size_t prg_rom_len,
                  const u8 prg_rom[static prg_rom_len], size_t chr_rom_len,
                  const u8 chr_rom[static chr_rom_len])
 {
-    if (mapper != nullptr) {
-        u8 *prg_rom_dup = memdup(prg_rom, prg_rom_len);
-        if (prg_rom_dup == nullptr)
-            return nullptr;
+    if (mapper == nullptr)
+        return nullptr;
 
-        u8 *chr_rom_dup = memdup(chr_rom, chr_rom_len);
-        if (chr_rom_dup == nullptr) {
-            free(prg_rom_dup);
-            return nullptr;
-        }
+    u8 *prg_rom_dup = memdup(prg_rom, prg_rom_len);
+    if (prg_rom_dup == nullptr)
+        goto err_cleanup_1;
 
-        *mapper = (struct nrom_mapper_t){
-            .prg_rom = prg_rom_dup,
-            .prg_rom_len = prg_rom_len,
-            .chr_rom = chr_rom_dup,
-            .chr_rom_len = chr_rom_len,
-        };
-    }
+    u8 *chr_rom_dup = memdup(chr_rom, chr_rom_len);
+    if (chr_rom_dup == nullptr)
+        goto err_cleanup_2;
+
+    *mapper = (struct nrom_mapper_t){
+        .prg_rom = prg_rom_dup,
+        .prg_rom_len = prg_rom_len,
+        .chr_rom = chr_rom_dup,
+        .chr_rom_len = chr_rom_len,
+    };
 
     return mapper;
+
+err_cleanup_2:
+    free(prg_rom_dup);
+err_cleanup_1:
+    return nullptr;
 }
 
 static struct nrom_mapper_t *
@@ -52,6 +56,7 @@ nrom_mapper_create(size_t prg_rom_len, const u8 prg_rom[static prg_rom_len],
 static void nrom_mapper_deinit_v(void *ptr)
 {
     struct nrom_mapper_t *mapper = ptr;
+
     free(mapper->prg_rom);
     free(mapper->chr_rom);
     *mapper = (struct nrom_mapper_t){};
