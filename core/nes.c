@@ -10,6 +10,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+enum dma_cycle_t : bool {
+    DMA_CYCLE_GET,
+    DMA_CYCLE_PUT,
+};
+
+enum dma_state_t : u8 {
+    DMA_STATE_IDLE,
+    DMA_STATE_READ,
+    DMA_STATE_WRITE,
+};
+
 struct nes_t {
     struct cpu_t cpu;
     struct mapper_t mapper;
@@ -28,12 +39,17 @@ struct nes_t {
     u8 oamaddr;
     u8 ppuscroll;
     u8 ppudata_buf;
-    u8 oamdma;
     u8 joy_strobe;
     u8 joy1;
     u8 joy2;
     unsigned _BitInt(1) w;
     bool mapper_init;
+
+    enum dma_state_t oamdma_state;
+    enum dma_cycle_t dma_cycle;
+    u8 oamdma_page;
+    u8 dma_counter;
+    u8 dma_buf;
 };
 
 static constexpr size_t RAM_SIZE = 0x800;
@@ -170,7 +186,7 @@ static u8 nes_read_mem(struct nes_t nes[static 1], u16 addr)
                 PANIC("read from $%04X (oamaddr)", addr);
             case 4: // oamdata
                 return nes->oam[nes->oamaddr];
-            case 5:
+            case 5: // ppuscroll
                 PANIC("read from $%04X (ppuscroll)", addr);
             case 6:
                 PANIC("read from $%04X (ppuaddr)", addr);
@@ -188,9 +204,9 @@ static u8 nes_read_mem(struct nes_t nes[static 1], u16 addr)
 
     if (addr < 0x4018) {
         switch (addr) {
-            case 0x4014:
-                return nes->oamdma;
-            case 0x4016: {
+            case 0x4014: // oamdma
+                PANIC("read from $%04X (oamdma)", addr);
+            case 0x4016: { // joy1
                 if (nes->joy_strobe != 0)
                     nes_update_joy1(nes);
 
@@ -231,14 +247,13 @@ static void nes_write_mem(struct nes_t nes[static 1], u16 addr, u8 value)
             case 2:
                 nes->ppustatus = value;
                 return;
-            case 3:
+            case 3: // oamaddr
                 nes->oamaddr = value;
                 return;
             case 4: // oamdata
-                // bits 2-4 are unimplemented and always 0
-                nes->oam[nes->oamaddr++] = value & 0b1110'0011;
+                nes->oam[nes->oamaddr++] = value;
                 return;
-            case 5:
+            case 5: // ppuscroll
                 if (nes->w == 0)
                     nes->ppuscroll =
                         (nes->ppuscroll & 0x00FF) | ((u16)value << 8);
@@ -269,21 +284,17 @@ static void nes_write_mem(struct nes_t nes[static 1], u16 addr, u8 value)
             return; // TODO: implement sound
 
         switch (addr) {
-            case 0x4014:
+            case 0x4014: // oamdma
                 assert(nes->oamaddr == 0);
-                nes->oamdma = value;
 
-                u16 start = (u16)value << 8;
-
-                // TODO: implement proper oam dma timing
-                for (u16 i = 0; i < 256; ++i)
-                    nes->oam[i] = nes_read_mem(nes, start + i);
-
+                nes->oamdma_page = value;
+                nes->oamdma_state = DMA_STATE_READ;
+                nes->dma_counter = 0;
                 return;
             case 0x4015:
                 // TODO: implement sound
                 return;
-            case 0x4016:
+            case 0x4016: // joy1
                 nes->joy_strobe = value & 1;
 
                 if (nes->joy_strobe != 0)
@@ -437,16 +448,6 @@ void nes_set_btn(struct nes_t *nes, enum nes_btn_t btn, bool pressed)
     set_bits(&nes->btns, 1 << btn, pressed);
 }
 
-u64 nes_dispatch_cpu(struct nes_t *nes)
-{
-    u64 start_cycles = nes->cpu.cycles;
-
-    struct memory_t mem = nes_as_memory(nes);
-    cpu_step(&nes->cpu, mem);
-
-    return CPU_CLK_RATIO * (nes->cpu.cycles - start_cycles);
-}
-
 static constexpr size_t DOTS_X = 341;
 static constexpr size_t DOTS_Y = 262;
 
@@ -585,6 +586,17 @@ static void nes_update_scanout(struct nes_t nes[static 1])
         nes_update_scanout_sprs(nes, col_mask, PRIORITY_LOW);
 }
 
+u64 nes_dispatch_cpu(struct nes_t *nes)
+{
+    if (nes->oamdma_state != DMA_STATE_IDLE)
+        return CPU_CLK_RATIO; // cpu is halted during oam dma
+
+    u64 start_cycles = nes->cpu.cycles;
+    cpu_step(&nes->cpu, nes_as_memory(nes));
+
+    return CPU_CLK_RATIO * (nes->cpu.cycles - start_cycles);
+}
+
 u64 nes_dispatch_pixel(struct nes_t *nes)
 {
     if (++nes->px == DOTS_X) {
@@ -609,6 +621,33 @@ u64 nes_dispatch_pixel(struct nes_t *nes)
     }
 
     return PPU_CLK_RATIO;
+}
+
+u64 nes_dispatch_dma_cycle(struct nes_t *nes)
+{
+    switch (nes->oamdma_state) {
+        case DMA_STATE_IDLE:
+            break;
+        case DMA_STATE_READ:
+            if (nes->dma_cycle == DMA_CYCLE_GET) {
+                u16 src_addr = ((u16)nes->oamdma_page << 8) | nes->dma_counter;
+                nes->dma_buf = nes_read_mem(nes, src_addr);
+                nes->oamdma_state = DMA_STATE_WRITE;
+            }
+            break;
+        case DMA_STATE_WRITE:
+            assert(nes->dma_cycle == DMA_CYCLE_PUT);
+            nes->oam[nes->dma_counter++] = nes->dma_buf;
+
+            if (nes->dma_counter == 0)
+                nes->oamdma_state = DMA_STATE_IDLE;
+            else
+                nes->oamdma_state = DMA_STATE_READ;
+            break;
+    }
+
+    nes->dma_cycle ^= 1;
+    return CPU_CLK_RATIO;
 }
 
 const u8 (*nes_get_scanout(const struct nes_t *nes))

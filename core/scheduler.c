@@ -8,6 +8,7 @@
 static u64 (*const DISPATCHERS[])(struct nes_t *) = {
     nes_dispatch_cpu,
     nes_dispatch_pixel,
+    nes_dispatch_dma_cycle,
 };
 
 static constexpr size_t SCHED_EVENT_COUNT = ARRAY_LEN(DISPATCHERS);
