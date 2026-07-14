@@ -8,18 +8,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// https://www.nesdev.org/wiki/PPU_palettes
-static const u8 COLORS[] = {
-#embed "../../data/2C02G_U_wiki.pal"
-};
-
 static void update_pixels(struct nes_t nes[static 1], Texture tex,
                           Color pixels[static tex.width * tex.height])
 {
     for (size_t y = 0; y < NES_SCREEN_HEIGHT; ++y) {
         for (size_t x = 0; x < NES_SCREEN_WIDTH; ++x) {
             size_t col = nes->scanout_buf[y][x];
-            const u8 *rgb = &COLORS[3 * col];
+            const u8 *rgb = &DISPLAY_COLORS[3 * col];
             pixels[(y * tex.width) + x] = (Color){rgb[0], rgb[1], rgb[2], 255};
         }
     }

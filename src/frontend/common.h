@@ -7,6 +7,9 @@
 static constexpr int WINDOW_INIT_WIDTH = 3 * NES_SCREEN_WIDTH;
 static constexpr int WINDOW_INIT_HEIGHT = 3 * NES_SCREEN_HEIGHT;
 
+// https://www.nesdev.org/wiki/PPU_palettes
+extern const u8 DISPLAY_COLORS[];
+
 struct frontend_t {
     const char *name;
     int (*run)(struct nes_t[static 1], struct sched_t *);
