@@ -60,7 +60,7 @@ static u8 *load_file(const char filename[static 1], size_t *out_size)
     if (file != nullptr) {
         fseek(file, 0, SEEK_END);
         size_t size = ftell(file);
-        rewind(file);
+        fseek(file, SEEK_SET, 0);
 
         data = malloc(size);
 
