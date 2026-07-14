@@ -12,6 +12,7 @@
 
 static constexpr size_t RAM_SIZE = 0x800;
 static constexpr size_t VRAM_SIZE = 0x800;
+static constexpr size_t OAM_SIZE = 4ULL * 64;
 
 static constexpr size_t CPU_CLK_RATIO = 12;
 static constexpr size_t PPU_CLK_RATIO = 4;
@@ -159,26 +160,25 @@ static u8 nes_read_mem(struct nes_t nes[static 1], u16 addr)
                 return nes->ppumask;
             case 2: {
                 u8 val = nes->ppustatus;
-
                 set_bits(&nes->ppustatus, PPUSTATUS_VBLANK, false);
                 nes->w = 0;
-
                 return val;
             }
-            case 3:
-                return nes->oamaddr;
-            case 4:
-                return nes->oamdata;
+            case 3: // oamaddr
+                PANIC("read from $%04X (oamaddr)", addr);
+            case 4: // oamdata
+                return nes->oam[nes->oamaddr];
             case 5:
-                return nes->ppuscroll;
+                PANIC("read from $%04X (ppuscroll)", addr);
             case 6:
-                PANIC("read from $%04X", addr);
-            case 7:
+                PANIC("read from $%04X (ppuaddr)", addr);
+            case 7: {
                 // ppudata is delayed by a buffer
                 u8 data = nes->ppudata_buf;
                 nes->ppudata_buf = nes_read_ppu(nes, nes->ppuaddr);
                 nes_inc_ppuaddr(nes);
                 return data;
+            }
             default:
                 unreachable();
         }
@@ -232,11 +232,17 @@ static void nes_write_mem(struct nes_t nes[static 1], u16 addr, u8 value)
             case 3:
                 nes->oamaddr = value;
                 return;
-            case 4:
-                nes->oamdata = value;
+            case 4: // oamdata
+                // bits 2-4 are unimplemented and always 0
+                nes->oam[nes->oamaddr++] = value & 0b1110'0011;
                 return;
             case 5:
-                nes->ppuscroll = value;
+                if (nes->w == 0)
+                    nes->ppuscroll =
+                        (nes->ppuscroll & 0x00FF) | ((u16)value << 8);
+                else
+                    nes->ppuscroll = (nes->ppuscroll & 0xFF00) | value;
+
                 nes->w ^= 1;
                 return;
             case 6:
@@ -262,7 +268,15 @@ static void nes_write_mem(struct nes_t nes[static 1], u16 addr, u8 value)
 
         switch (addr) {
             case 0x4014:
+                assert(nes->oamaddr == 0);
                 nes->oamdma = value;
+
+                u16 start = (u16)value << 8;
+
+                // TODO: implement proper oam dma timing
+                for (u16 i = 0; i < 256; ++i)
+                    nes->oam[i] = nes_read_mem(nes, start + i);
+
                 return;
             case 0x4015:
                 // TODO: implement sound
@@ -310,18 +324,25 @@ struct nes_t *nes_init(struct nes_t *nes)
     if (scanout_buf == nullptr)
         goto err_cleanup_3;
 
+    u8 *oam = calloc(OAM_SIZE, sizeof(oam[0]));
+    if (oam == nullptr)
+        goto err_cleanup_4;
+
     struct cpu_t cpu = {};
     if (!cpu_init(&cpu))
-        goto err_cleanup_4;
+        goto err_cleanup_5;
 
     *nes = (struct nes_t){};
     nes->cpu = cpu;
     nes->ram = ram;
     nes->vram = vram;
+    nes->oam = oam;
     nes->scanout_buf = scanout_buf;
 
     return nes;
 
+err_cleanup_5:
+    free(oam);
 err_cleanup_4:
     free(scanout_buf);
 err_cleanup_3:
@@ -345,9 +366,10 @@ void nes_deinit(struct nes_t *nes)
     if (nes->mapper_init)
         mapper_deinit(nes->mapper);
 
-    free(nes->ram);
-    free(nes->vram);
+    free(nes->oam);
     free(nes->scanout_buf);
+    free(nes->vram);
+    free(nes->ram);
 
     *nes = (struct nes_t){};
 }
@@ -430,42 +452,104 @@ static constexpr size_t LINE_VBLANK = 241;
 static void nes_update_scanout_bg(struct nes_t nes[static 1], size_t nt_addr,
                                   u8 col_mask)
 {
-    size_t pat_tbl_addr =
+    u16 pat_tbl_addr =
         (nes->ppuctrl & PPUCTRL_BG_PAT_ADDR) == 0 ? 0x0000 : 0x1000;
 
     for (size_t ty = 0; ty < 30; ++ty) {
         for (size_t tx = 0; tx < 32; ++tx) {
-            size_t x_base = 8 * tx;
-            size_t y_base = 8 * ty;
+            size_t dst_x = 8 * tx;
+            size_t dst_y = 8 * ty;
 
-            size_t nt_idx = (ty * 32) + tx;
-            size_t nt_entry = nes_read_ppu(nes, nt_addr + nt_idx);
-            size_t pat_base = pat_tbl_addr + (16 * nt_entry);
+            u8 t_idx = nes_read_ppu(nes, nt_addr + (ty * 32) + tx);
+            u16 pat_base = pat_tbl_addr + (16ULL * t_idx);
 
             size_t attr_idx = ((ty / 4) * 8) + (tx / 4);
-            size_t elem = (((ty / 2) % 2) * 2) + ((tx / 2) % 2);
+            size_t attr_quad = (((ty / 2) % 2) * 2) + ((tx / 2) % 2);
 
             u8 attr = nes_read_ppu(nes, nt_addr + 0x3C0 + attr_idx);
-            u8 pal = (attr >> (2 * elem)) & 0b11;
+            u8 pal = (attr >> (2 * attr_quad)) & 0b11;
 
-            for (size_t sy = 0; sy < 8; ++sy) {
-                u8 p0 = nes_read_ppu(nes, pat_base + sy);
-                u8 p1 = nes_read_ppu(nes, pat_base + sy + 8);
+            for (size_t py = 0; py < 8; ++py) {
+                u8 p0 = nes_read_ppu(nes, pat_base + py);
+                u8 p1 = nes_read_ppu(nes, pat_base + py + 8);
 
-                for (size_t sx = 0; sx < 8; ++sx) {
+                for (size_t px = 0; px < 8; ++px) {
                     u8 b0 = p0 >> 7;
                     u8 b1 = p1 >> 7;
                     u8 entry = b0 | (b1 << 1);
 
                     if (entry != 0) {
-                        size_t col = nes->pal_ram[(4 * pal) + entry];
-                        nes->scanout_buf[y_base + sy][x_base + sx] =
+                        u8 col = nes->pal_ram[(4 * pal) + entry];
+                        nes->scanout_buf[dst_y + py][dst_x + px] =
                             col & col_mask;
                     }
 
                     p0 <<= 1;
                     p1 <<= 1;
                 }
+            }
+        }
+    }
+}
+
+enum spr_attrs_t : u8 {
+    ATTRS_PALETTE = 0b11,
+    ATTRS_PRIORITY = 1 << 5,
+    ATTRS_FLIP_HORIZONTAL = 1 << 6,
+    ATTRS_FLIP_VERTICAL = 1 << 7,
+};
+
+enum spr_priority_t : u8 {
+    PRIORITY_HIGH,
+    PRIORITY_LOW,
+};
+
+static void nes_update_scanout_sprs(struct nes_t nes[static 1], u8 col_mask,
+                                    enum spr_priority_t priority)
+{
+    u16 pt_addr = (nes->ppuctrl & PPUCTRL_SPR_PAT_ADDR) == 0 ? 0x0000 : 0x1000;
+
+    for (size_t i = 0; i < 64; ++i) {
+        u8 y_pos = nes->oam[(4 * i)] + 1;
+        if (y_pos == 0)
+            continue;
+
+        u8 tile_idx = nes->oam[(4 * i) + 1];
+        u8 attrs = nes->oam[(4 * i) + 2];
+        u8 x_pos = nes->oam[(4 * i) + 3];
+
+        enum spr_priority_t spr_priority =
+            (attrs & ATTRS_PRIORITY) == 0 ? PRIORITY_LOW : PRIORITY_HIGH;
+
+        if (spr_priority != priority)
+            continue;
+
+        u8 pal = attrs & ATTRS_PALETTE;
+        bool flip_hor = (attrs & ATTRS_FLIP_HORIZONTAL) != 0;
+        bool flip_ver = (attrs & ATTRS_FLIP_VERTICAL) != 0;
+
+        u16 pat_addr = pt_addr + (16ULL * tile_idx);
+
+        for (size_t py = 0; py < 8; ++py) {
+            u8 p0 = nes_read_ppu(nes, pat_addr + py);
+            u8 p1 = nes_read_ppu(nes, pat_addr + py + 8);
+
+            for (size_t px = 0; px < 8; ++px) {
+                u8 entry_b0 = p0 >> 7;
+                u8 entry_b1 = p1 >> 7;
+                u8 entry = entry_b0 | (entry_b1 << 1);
+
+                size_t py_real = flip_ver ? (7 - py) : py;
+                size_t px_real = flip_hor ? (7 - px) : px;
+
+                if (entry != 0) {
+                    u8 col = nes->pal_ram[(4 * (4 + pal)) + entry];
+                    nes->scanout_buf[y_pos + py_real][x_pos + px_real] =
+                        col & col_mask;
+                }
+
+                p0 <<= 1;
+                p1 <<= 1;
             }
         }
     }
@@ -484,8 +568,14 @@ static void nes_update_scanout(struct nes_t nes[static 1])
     memset(nes->scanout_buf, nes->pal_ram[0] & col_mask,
            NES_SCREEN_HEIGHT * sizeof(nes->scanout_buf[0]));
 
+    if ((nes->ppumask & PPUMASK_SPR_EN) != 0)
+        nes_update_scanout_sprs(nes, col_mask, PRIORITY_HIGH);
+
     if ((nes->ppumask & PPUMASK_BG_EN) != 0)
         nes_update_scanout_bg(nes, nt_addr, col_mask);
+
+    if ((nes->ppumask & PPUMASK_SPR_EN) != 0)
+        nes_update_scanout_sprs(nes, col_mask, PRIORITY_LOW);
 }
 
 u64 nes_dispatch_pixel(struct nes_t nes[static 1])

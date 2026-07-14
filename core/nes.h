@@ -39,6 +39,7 @@ struct nes_t {
     size_t py;
     u8 *ram;
     u8 *vram;
+    u8 *oam;
     u8 (*scanout_buf)[NES_SCREEN_WIDTH];
     u16 ppuaddr;
     u8 pal_ram[NES_PAL_RAM_SIZE];
@@ -46,7 +47,6 @@ struct nes_t {
     u8 ppumask;
     u8 ppustatus;
     u8 oamaddr;
-    u8 oamdata;
     u8 ppuscroll;
     u8 ppudata_buf;
     u8 oamdma;
