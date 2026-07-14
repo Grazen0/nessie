@@ -107,6 +107,7 @@ static u16 cpu_read_pc_u16(struct cpu_t *cpu, struct memory_t mem)
 }
 
 enum opkind_t : u8 {
+    OP_IMPL,
     OP_A,
     OP_ABS,
     OP_ABS_X,
@@ -135,6 +136,7 @@ static struct operand_t cpu_compute_operand(struct cpu_t cpu[static 1],
     };
 
     switch (kind) {
+        case OP_IMPL:
         case OP_A:
         case OP_IMM: // 0 cycles
             break;
@@ -198,6 +200,8 @@ static struct operand_t cpu_compute_operand(struct cpu_t cpu[static 1],
 static u8 cpu_read_operand(struct cpu_t cpu[static 1], struct memory_t mem,
                            struct operand_t op)
 {
+    assert(op.kind != OP_IMPL && "cannot read implied operand");
+
     if (op.kind == OP_A)
         return cpu->a;
 
@@ -211,6 +215,7 @@ static void cpu_write_operand(struct cpu_t cpu[static 1], struct memory_t mem,
                               struct operand_t op, u8 value)
 {
     assert(op.kind != OP_IMM && "cannot write to immediate operand");
+    assert(op.kind != OP_IMPL && "cannot write to implied operand");
 
     if (op.kind == OP_A) {
         cpu->a = value;
@@ -453,6 +458,24 @@ static void cpu_instr_ldy(struct cpu_t cpu[static 1], struct memory_t mem,
     set_bits(&cpu->p, FLAG_Z, cpu->y == 0);
 }
 
+static void cpu_instr_lax(struct cpu_t cpu[static 1], struct memory_t mem,
+                          enum opkind_t op_kind)
+{
+    struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
+    cpu->a = cpu_read_operand(cpu, mem, op);
+    cpu->x = cpu->a;
+
+    set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
+}
+
+static void cpu_instr_sax(struct cpu_t cpu[static 1], struct memory_t mem,
+                          enum opkind_t op_kind)
+{
+    struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
+    cpu_write_operand(cpu, mem, op, cpu->a & cpu->x);
+}
+
 static void cpu_instr_dec(struct cpu_t cpu[static 1], struct memory_t mem,
                           enum opkind_t op_kind)
 {
@@ -516,6 +539,136 @@ static void cpu_instr_bxx(struct cpu_t cpu[static 1], struct memory_t mem,
 
         cpu->pc += offset;
     }
+}
+
+static void cpu_instr_nop(struct cpu_t cpu[static 1], struct memory_t mem,
+                          enum opkind_t op_kind)
+{
+    struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
+    if (op_kind != OP_IMPL)
+        cpu_read_operand(cpu, mem, op);
+
+    ++cpu->cycles;
+}
+
+static void cpu_instr_dcp(struct cpu_t cpu[static 1], struct memory_t mem,
+                          enum opkind_t op_kind)
+{
+    struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
+    u8 rhs = cpu_read_operand(cpu, mem, op);
+    --rhs;
+    ++cpu->cycles;
+    cpu_write_operand(cpu, mem, op, rhs);
+
+    u8 a_cpy = cpu->a;
+    bool borrow = ckd_sub(&a_cpy, a_cpy, rhs);
+
+    set_bits(&cpu->p, FLAG_N, (a_cpy & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, a_cpy == 0);
+    set_bits(&cpu->p, FLAG_C, !borrow);
+}
+
+static void cpu_instr_isc(struct cpu_t cpu[static 1], struct memory_t mem,
+                          enum opkind_t op_kind)
+{
+    struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
+    u8 rhs = cpu_read_operand(cpu, mem, op);
+    ++rhs;
+    ++cpu->cycles;
+    cpu_write_operand(cpu, mem, op, rhs);
+
+    i8 a_signed = (i8)cpu->a;
+
+    bool borrow = ckd_sub(&cpu->a, cpu->a, rhs);
+    bool overflow = ckd_sub(&a_signed, a_signed, (i8)rhs);
+
+    if ((cpu->p & FLAG_C) == 0) {
+        borrow = ckd_sub(&cpu->a, cpu->a, 1) || borrow;
+        overflow = ckd_sub(&a_signed, a_signed, 1) || overflow;
+    }
+
+    set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
+    set_bits(&cpu->p, FLAG_C, !borrow);
+    set_bits(&cpu->p, FLAG_V, overflow);
+}
+
+static void cpu_instr_rla(struct cpu_t cpu[static 1], struct memory_t mem,
+                          enum opkind_t op_kind)
+{
+    struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
+    u8 val = cpu_read_operand(cpu, mem, op);
+
+    u8 in_bit = (cpu->p & FLAG_C) != 0 ? 1 : 0;
+    u8 val_new = (val << 1) | in_bit;
+    ++cpu->cycles;
+    cpu_write_operand(cpu, mem, op, val_new);
+
+    cpu->a &= val_new;
+
+    set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
+    set_bits(&cpu->p, FLAG_C, (val & 0x80) != 0);
+}
+
+static void cpu_instr_slo(struct cpu_t cpu[static 1], struct memory_t mem,
+                          enum opkind_t op_kind)
+{
+    struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
+    u8 val = cpu_read_operand(cpu, mem, op);
+
+    u8 val_new = val << 1;
+    ++cpu->cycles;
+
+    cpu_write_operand(cpu, mem, op, val_new);
+    cpu->a |= val_new;
+
+    set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
+    set_bits(&cpu->p, FLAG_C, (val & 0x80) != 0);
+}
+
+static void cpu_instr_sre(struct cpu_t cpu[static 1], struct memory_t mem,
+                          enum opkind_t op_kind)
+{
+    struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
+    u8 val = cpu_read_operand(cpu, mem, op);
+
+    u8 val_new = val >> 1;
+    ++cpu->cycles;
+    cpu_write_operand(cpu, mem, op, val_new);
+    cpu->a ^= val_new;
+
+    set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
+    set_bits(&cpu->p, FLAG_C, (val & 1) != 0);
+}
+
+static void cpu_instr_rra(struct cpu_t cpu[static 1], struct memory_t mem,
+                          enum opkind_t op_kind)
+{
+    struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
+    u8 val = cpu_read_operand(cpu, mem, op);
+
+    u8 in_bit = (cpu->p & FLAG_C) != 0 ? 1 : 0;
+    u8 val_new = (val >> 1) | (in_bit << 7);
+    ++cpu->cycles;
+    cpu_write_operand(cpu, mem, op, val_new);
+
+    i8 a_signed = (i8)cpu->a;
+
+    bool carry = ckd_add(&cpu->a, cpu->a, val_new);
+    bool overflow = ckd_add(&a_signed, a_signed, (i8)val_new);
+
+    if ((val & 1) != 0) { // carry would effectively become this
+        carry = ckd_add(&cpu->a, cpu->a, 1) || carry;
+        overflow = ckd_add(&a_signed, a_signed, 1) || overflow;
+    }
+
+    set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
+    set_bits(&cpu->p, FLAG_C, carry);
+    set_bits(&cpu->p, FLAG_V, overflow);
 }
 
 void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
@@ -586,10 +739,6 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
             cpu->x = cpu->s;
             set_bits(&cpu->p, FLAG_N, (cpu->x & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->x == 0);
-            ++cpu->cycles;
-            break;
-
-        case 0xEA: // nop
             ++cpu->cycles;
             break;
 
@@ -666,6 +815,8 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
             break;
 
             // clang-format off
+        case 0xEA: cpu_instr_nop(cpu, mem, OP_IMPL); break;
+
         case 0x24: cpu_instr_bit(cpu, mem, OP_ZPG); break;
         case 0x2C: cpu_instr_bit(cpu, mem, OP_ABS); break;
 
@@ -813,6 +964,96 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
         case 0xEE: cpu_instr_inc(cpu, mem, OP_ABS); break;
         case 0xF6: cpu_instr_inc(cpu, mem, OP_ZPG_X); break;
         case 0xFE: cpu_instr_inc(cpu, mem, OP_ABS_X); break;
+
+        case 0x1A: cpu_instr_nop(cpu, mem, OP_IMPL); break;
+        case 0x3A: cpu_instr_nop(cpu, mem, OP_IMPL); break;
+        case 0x5A: cpu_instr_nop(cpu, mem, OP_IMPL); break;
+        case 0x7A: cpu_instr_nop(cpu, mem, OP_IMPL); break;
+        case 0xDA: cpu_instr_nop(cpu, mem, OP_IMPL); break;
+        case 0xFA: cpu_instr_nop(cpu, mem, OP_IMPL); break;
+        case 0x80: cpu_instr_nop(cpu, mem, OP_IMM); break;
+        case 0x82: cpu_instr_nop(cpu, mem, OP_IMM); break;
+        case 0x89: cpu_instr_nop(cpu, mem, OP_IMM); break;
+        case 0xC2: cpu_instr_nop(cpu, mem, OP_IMM); break;
+        case 0xE2: cpu_instr_nop(cpu, mem, OP_IMM); break;
+        case 0x04: cpu_instr_nop(cpu, mem, OP_ZPG); break;
+        case 0x44: cpu_instr_nop(cpu, mem, OP_ZPG); break;
+        case 0x64: cpu_instr_nop(cpu, mem, OP_ZPG); break;
+        case 0x14: cpu_instr_nop(cpu, mem, OP_ZPG_X); break;
+        case 0x34: cpu_instr_nop(cpu, mem, OP_ZPG_X); break;
+        case 0x54: cpu_instr_nop(cpu, mem, OP_ZPG_X); break;
+        case 0x74: cpu_instr_nop(cpu, mem, OP_ZPG_X); break;
+        case 0xD4: cpu_instr_nop(cpu, mem, OP_ZPG_X); break;
+        case 0xF4: cpu_instr_nop(cpu, mem, OP_ZPG_X); break;
+        case 0x0C: cpu_instr_nop(cpu, mem, OP_ABS); break;
+        case 0x1C: cpu_instr_nop(cpu, mem, OP_ABS_X); break;
+        case 0x3C: cpu_instr_nop(cpu, mem, OP_ABS_X); break;
+        case 0x5C: cpu_instr_nop(cpu, mem, OP_ABS_X); break;
+        case 0x7C: cpu_instr_nop(cpu, mem, OP_ABS_X); break;
+        case 0xDC: cpu_instr_nop(cpu, mem, OP_ABS_X); break;
+        case 0xFC: cpu_instr_nop(cpu, mem, OP_ABS_X); break;
+
+        case 0xA7: cpu_instr_lax(cpu, mem, OP_ZPG); break;
+        case 0xB7: cpu_instr_lax(cpu, mem, OP_ZPG_Y); break;
+        case 0xAF: cpu_instr_lax(cpu, mem, OP_ABS); break;
+        case 0xBF: cpu_instr_lax(cpu, mem, OP_ABS_Y); break;
+        case 0xA3: cpu_instr_lax(cpu, mem, OP_X_IND); break;
+        case 0xB3: cpu_instr_lax(cpu, mem, OP_IND_Y); break;
+
+        case 0x87: cpu_instr_sax(cpu, mem, OP_ZPG); break;
+        case 0x97: cpu_instr_sax(cpu, mem, OP_ZPG_Y); break;
+        case 0x8F: cpu_instr_sax(cpu, mem, OP_ABS); break;
+        case 0x83: cpu_instr_sax(cpu, mem, OP_X_IND); break;
+
+        case 0xEB: cpu_instr_sbc(cpu, mem, OP_IMM); break;
+
+        case 0xC7: cpu_instr_dcp(cpu, mem, OP_ZPG); break;
+        case 0xD7: cpu_instr_dcp(cpu, mem, OP_ZPG_X); break;
+        case 0xCF: cpu_instr_dcp(cpu, mem, OP_ABS); break;
+        case 0xDF: cpu_instr_dcp(cpu, mem, OP_ABS_X); break;
+        case 0xDB: cpu_instr_dcp(cpu, mem, OP_ABS_Y); break;
+        case 0xC3: cpu_instr_dcp(cpu, mem, OP_X_IND); break;
+        case 0xD3: cpu_instr_dcp(cpu, mem, OP_IND_Y); break;
+
+        case 0xE7: cpu_instr_isc(cpu, mem, OP_ZPG); break;
+        case 0xF7: cpu_instr_isc(cpu, mem, OP_ZPG_X); break;
+        case 0xEF: cpu_instr_isc(cpu, mem, OP_ABS); break;
+        case 0xFF: cpu_instr_isc(cpu, mem, OP_ABS_X); break;
+        case 0xFB: cpu_instr_isc(cpu, mem, OP_ABS_Y); break;
+        case 0xE3: cpu_instr_isc(cpu, mem, OP_X_IND); break;
+        case 0xF3: cpu_instr_isc(cpu, mem, OP_IND_Y); break;
+
+        case 0x27: cpu_instr_rla(cpu, mem, OP_ZPG); break;
+        case 0x37: cpu_instr_rla(cpu, mem, OP_ZPG_X); break;
+        case 0x2F: cpu_instr_rla(cpu, mem, OP_ABS); break;
+        case 0x3F: cpu_instr_rla(cpu, mem, OP_ABS_X); break;
+        case 0x3B: cpu_instr_rla(cpu, mem, OP_ABS_Y); break;
+        case 0x23: cpu_instr_rla(cpu, mem, OP_X_IND); break;
+        case 0x33: cpu_instr_rla(cpu, mem, OP_IND_Y); break;
+
+        case 0x07: cpu_instr_slo(cpu, mem, OP_ZPG); break;
+        case 0x17: cpu_instr_slo(cpu, mem, OP_ZPG_X); break;
+        case 0x0F: cpu_instr_slo(cpu, mem, OP_ABS); break;
+        case 0x1F: cpu_instr_slo(cpu, mem, OP_ABS_X); break;
+        case 0x1B: cpu_instr_slo(cpu, mem, OP_ABS_Y); break;
+        case 0x03: cpu_instr_slo(cpu, mem, OP_X_IND); break;
+        case 0x13: cpu_instr_slo(cpu, mem, OP_IND_Y); break;
+
+        case 0x47: cpu_instr_sre(cpu, mem, OP_ZPG); break;
+        case 0x57: cpu_instr_sre(cpu, mem, OP_ZPG_X); break;
+        case 0x4F: cpu_instr_sre(cpu, mem, OP_ABS); break;
+        case 0x5F: cpu_instr_sre(cpu, mem, OP_ABS_X); break;
+        case 0x5B: cpu_instr_sre(cpu, mem, OP_ABS_Y); break;
+        case 0x43: cpu_instr_sre(cpu, mem, OP_X_IND); break;
+        case 0x53: cpu_instr_sre(cpu, mem, OP_IND_Y); break;
+
+        case 0x67: cpu_instr_rra(cpu, mem, OP_ZPG); break;
+        case 0x77: cpu_instr_rra(cpu, mem, OP_ZPG_X); break;
+        case 0x6F: cpu_instr_rra(cpu, mem, OP_ABS); break;
+        case 0x7F: cpu_instr_rra(cpu, mem, OP_ABS_X); break;
+        case 0x7B: cpu_instr_rra(cpu, mem, OP_ABS_Y); break;
+        case 0x63: cpu_instr_rra(cpu, mem, OP_X_IND); break;
+        case 0x73: cpu_instr_rra(cpu, mem, OP_IND_Y); break;
             // clang-format on
 
         default:
