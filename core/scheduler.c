@@ -5,39 +5,46 @@
 #include <stddef.h>
 #include <stdlib.h>
 
-static u64 (*const DISPATCHERS[])(struct nes_t *) = {
+static u64 (*const EVENT_TIMES[])(const struct nes_t *) = {
+    nes_time_cpu,
+    nes_time_pixel,
+    nes_time_dma_cycle,
+};
+
+static void (*const EVENT_DISPATCHERS[])(struct nes_t *) = {
     nes_dispatch_cpu,
     nes_dispatch_pixel,
     nes_dispatch_dma_cycle,
 };
+static_assert(ARRAY_LEN(EVENT_DISPATCHERS) == ARRAY_LEN(EVENT_TIMES));
 
-static constexpr size_t SCHED_EVENT_COUNT = ARRAY_LEN(DISPATCHERS);
+static constexpr size_t SCHED_EVENT_COUNT = ARRAY_LEN(EVENT_DISPATCHERS);
 
 struct sched_t {
     u64 times[SCHED_EVENT_COUNT];
 };
 
-struct sched_t *sched_init(struct sched_t *sched)
+struct sched_t *sched_init(struct sched_t *sched, const struct nes_t *nes)
 {
     if (sched != nullptr) {
-        *sched = (struct sched_t){
-            .times = {},
-        };
+        *sched = (struct sched_t){};
+
+        for (size_t i = 0; i < SCHED_EVENT_COUNT; ++i)
+            sched->times[i] = EVENT_TIMES[i](nes);
     }
 
     return sched;
 }
 
-struct sched_t *sched_create()
+struct sched_t *sched_create(const struct nes_t *nes)
 {
-    return sched_init(calloc(1, sizeof(struct sched_t)));
+    return sched_init(calloc(1, sizeof(struct sched_t)), nes);
 }
 
 void sched_deinit(struct sched_t *sched)
 {
-    if (sched != nullptr) {
+    if (sched != nullptr)
         *sched = (struct sched_t){};
-    }
 }
 
 void sched_destroy(struct sched_t *sched)
@@ -67,8 +74,8 @@ void sched_dispatch(struct sched_t *sched, struct nes_t *nes)
             next_ev = i;
     }
 
-    u64 elapsed = DISPATCHERS[next_ev](nes);
-    sched->times[next_ev] += elapsed;
+    EVENT_DISPATCHERS[next_ev](nes);
+    sched->times[next_ev] = EVENT_TIMES[next_ev](nes);
 }
 
 void sched_dispatch_until(struct sched_t *sched, struct nes_t *nes, u64 until)

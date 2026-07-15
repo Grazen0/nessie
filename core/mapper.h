@@ -1,6 +1,7 @@
 #ifndef NESSIE_MAPPER_H
 #define NESSIE_MAPPER_H
 
+#include "cpu.h"
 #include "error.h"
 #include "ines.h"
 #include "util.h"
@@ -34,6 +35,7 @@ struct mapper_ppu_write_t {
 struct mapper_vtable_t {
     void (*deinit)(void *ptr);
     u8 (*read)(void *ptr, u16 addr);
+    u8 (*peek)(const void *ptr, u16 addr);
     void (*write)(void *ptr, u16 addr, u8 value);
     struct mapper_ppu_read_t (*read_ppu)(void *ptr, u16 addr);
     struct mapper_ppu_write_t (*write_ppu)(void *ptr, u16 addr, u8 value);
@@ -53,6 +55,11 @@ static inline void mapper_deinit(struct mapper_t mapper)
 static inline u8 mapper_read(struct mapper_t mapper, u16 addr)
 {
     return mapper.vtable->read(mapper.ptr, addr);
+}
+
+static inline u8 mapper_peek(struct mapper_t mapper, u16 addr)
+{
+    return mapper.vtable->peek(mapper.ptr, addr);
 }
 
 static inline void mapper_write(struct mapper_t mapper, u16 addr, u8 value)

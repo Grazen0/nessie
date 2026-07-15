@@ -62,11 +62,23 @@ static void nrom_mapper_deinit_v(void *ptr)
     *mapper = (struct nrom_mapper_t){};
 }
 
+static u8 nrom_mapper_peek_v(const void *ptr, u16 addr)
+{
+    const struct nrom_mapper_t *mapper = ptr;
+
+    if (addr < 0x8000)
+        return 0xFF;
+
+    return mapper->prg_rom[(addr - 0x8000) % mapper->prg_rom_len];
+}
+
 static u8 nrom_mapper_read_v(void *ptr, u16 addr)
 {
-    struct nrom_mapper_t *mapper = ptr;
+    const struct nrom_mapper_t *mapper = ptr;
 
-    assert(addr >= 0x8000);
+    if (addr < 0x8000)
+        return 0xFF;
+
     return mapper->prg_rom[(addr - 0x8000) % mapper->prg_rom_len];
 }
 
@@ -119,6 +131,7 @@ static struct mapper_ppu_write_t nrom_mapper_write_ppu_v(void *ptr, u16 addr,
 static const struct mapper_vtable_t NROM_MAPPER_VTABLE = {
     .deinit = nrom_mapper_deinit_v,
     .read = nrom_mapper_read_v,
+    .peek = nrom_mapper_peek_v,
     .write = nrom_mapper_write_v,
     .read_ppu = nrom_mapper_read_ppu_v,
     .write_ppu = nrom_mapper_write_ppu_v,

@@ -8,9 +8,9 @@
 
 struct sched_t;
 
-struct sched_t *sched_init(struct sched_t *sched);
+struct sched_t *sched_init(struct sched_t *sched, const struct nes_t *nes);
 
-[[nodiscard]] struct sched_t *sched_create();
+[[nodiscard]] struct sched_t *sched_create(const struct nes_t *nes);
 
 void sched_deinit(struct sched_t *sched);
 

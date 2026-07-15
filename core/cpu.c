@@ -2,6 +2,7 @@
 #include "util.h"
 #include <assert.h>
 #include <stdckdint.h>
+#include <stdlib.h>
 
 static constexpr u16 NMI_LOC = 0xFFFA;
 static constexpr u16 RES_LOC = 0xFFFC;
@@ -84,6 +85,7 @@ static u8 cpu_st_pull(struct cpu_t cpu[static 1], struct memory_t mem)
 {
     ++cpu->s;
     ++cpu->cyc;
+
     return cpu_read_mem(cpu, mem, cpu_sp(cpu));
 }
 
@@ -97,7 +99,12 @@ static u16 cpu_st_pull_u16(struct cpu_t cpu[static 1], struct memory_t mem)
 
 static u16 cpu_read_pc(struct cpu_t *cpu, struct memory_t mem)
 {
-    return cpu_read_mem(cpu, mem, cpu->pc++);
+    assert(cpu->trace.instr.bytes_cnt < CPU_INSTR_BYTES_MAX);
+
+    u8 val = cpu_read_mem(cpu, mem, cpu->pc++);
+    cpu->trace.instr.bytes[cpu->trace.instr.bytes_cnt++] = val;
+
+    return val;
 }
 
 static u16 cpu_read_pc_u16(struct cpu_t *cpu, struct memory_t mem)
@@ -107,34 +114,23 @@ static u16 cpu_read_pc_u16(struct cpu_t *cpu, struct memory_t mem)
     return (hi << 8) | lo;
 }
 
-enum opkind_t : u8 {
-    OP_IMPL,
-    OP_A,
-    OP_ABS,
-    OP_ABS_X,
-    OP_ABS_Y,
-    OP_IMM,
-    OP_IND,
-    OP_X_IND,
-    OP_IND_Y,
-    OP_ZPG,
-    OP_ZPG_X,
-    OP_ZPG_Y,
-};
-
 struct operand_t {
-    enum opkind_t kind;
+    enum cpu_op_kind_t kind;
     u16 addr; // effective address
 };
 
 static struct operand_t cpu_compute_operand(struct cpu_t cpu[static 1],
                                             struct memory_t mem,
-                                            enum opkind_t kind, bool is_write)
+                                            enum cpu_op_kind_t kind,
+                                            bool is_write)
 {
     struct operand_t op = {
         .kind = kind,
         .addr = 0,
     };
+
+    auto trace_op = &cpu->trace.instr.op;
+    trace_op->kind = kind;
 
     switch (kind) {
         case OP_IMPL:
@@ -143,17 +139,40 @@ static struct operand_t cpu_compute_operand(struct cpu_t cpu[static 1],
             break;
         case OP_ZPG: // 1 cycle
             op.addr = cpu_read_pc(cpu, mem);
+
+            trace_op->zpg.addr = op.addr;
+            trace_op->zpg.addr_value = memory_peek(mem, op.addr);
             break;
-        case OP_ZPG_X: // 2 cycles
-            op.addr = (cpu_read_pc(cpu, mem) + cpu->x) & 0xFF;
+        case OP_ZPG_X: { // 2 cycles
+            u8 base = cpu_read_pc(cpu, mem);
+            op.addr = (base + cpu->x) & 0xFF;
             ++cpu->cyc;
+
+            trace_op->zpg_xy.addr = base;
+            trace_op->zpg_xy.addr_xy = op.addr;
+            trace_op->zpg_xy.addr_xy_value = memory_peek(mem, op.addr);
             break;
-        case OP_ZPG_Y: // 2 cycles
-            op.addr = (cpu_read_pc(cpu, mem) + cpu->y) & 0xFF;
+        }
+        case OP_ZPG_Y: { // 2 cycles
+            u8 base = cpu_read_pc(cpu, mem);
+            op.addr = (base + cpu->y) & 0xFF;
             ++cpu->cyc;
+
+            trace_op->zpg_xy.addr = base;
+            trace_op->zpg_xy.addr_xy = op.addr;
+            trace_op->zpg_xy.addr_xy_value = memory_peek(mem, op.addr);
             break;
+        }
         case OP_ABS: // 2 cycles
             op.addr = cpu_read_pc_u16(cpu, mem);
+
+            trace_op->abs.addr = op.addr;
+            trace_op->abs.addr_value = memory_peek(mem, op.addr);
+            break;
+        case OP_ADDR: // 2 cycles, alias for ABS
+            op.addr = cpu_read_pc_u16(cpu, mem);
+
+            trace_op->addr.addr = op.addr;
             break;
         case OP_ABS_X: { // 2+ cycles
             u16 base = cpu_read_pc_u16(cpu, mem);
@@ -161,6 +180,10 @@ static struct operand_t cpu_compute_operand(struct cpu_t cpu[static 1],
                 ++cpu->cyc;
 
             op.addr = base + cpu->x;
+
+            trace_op->abs_xy.addr = base;
+            trace_op->abs_xy.addr_xy = op.addr;
+            trace_op->abs_xy.addr_xy_value = memory_peek(mem, op.addr);
             break;
         }
         case OP_ABS_Y: { // 2+ cycles
@@ -169,18 +192,31 @@ static struct operand_t cpu_compute_operand(struct cpu_t cpu[static 1],
                 ++cpu->cyc;
 
             op.addr = base + cpu->y;
+
+            trace_op->abs_xy.addr = base;
+            trace_op->abs_xy.addr_xy = op.addr;
+            trace_op->abs_xy.addr_xy_value = memory_peek(mem, op.addr);
             break;
         }
         case OP_IND: { // 4 cycles
             u16 ind_addr = cpu_read_pc_u16(cpu, mem);
             op.addr = cpu_read_mem_u16_wrap_page(cpu, mem, ind_addr);
+
+            trace_op->ind.addr = ind_addr;
+            trace_op->ind.eff_addr = op.addr;
             break;
         }
         case OP_X_IND: { // 4 cycles
-            u8 ind_addr = cpu_read_pc(cpu, mem) + cpu->x;
+            u8 ind_addr = cpu_read_pc(cpu, mem);
+            u8 ind_addr_x = ind_addr + cpu->x;
             ++cpu->cyc;
 
-            op.addr = cpu_read_zpg_u16(cpu, mem, ind_addr);
+            op.addr = cpu_read_zpg_u16(cpu, mem, ind_addr_x);
+
+            trace_op->x_ind.addr = ind_addr;
+            trace_op->x_ind.addr_x = ind_addr_x;
+            trace_op->x_ind.eff_addr = op.addr;
+            trace_op->x_ind.eff_addr_value = memory_peek(mem, op.addr);
             break;
         }
         case OP_IND_Y: { // 3+ cycles
@@ -191,6 +227,11 @@ static struct operand_t cpu_compute_operand(struct cpu_t cpu[static 1],
                 ++cpu->cyc;
 
             op.addr = addr + cpu->y;
+
+            trace_op->ind_y.addr = ind_addr;
+            trace_op->ind_y.eff_addr = addr;
+            trace_op->ind_y.eff_addr_y = op.addr;
+            trace_op->ind_y.eff_addr_y_value = memory_peek(mem, op.addr);
             break;
         }
     }
@@ -206,8 +247,11 @@ static u8 cpu_read_operand(struct cpu_t cpu[static 1], struct memory_t mem,
     if (op.kind == OP_A)
         return cpu->a;
 
-    if (op.kind == OP_IMM)
-        return cpu_read_pc(cpu, mem);
+    if (op.kind == OP_IMM) {
+        u8 val = cpu_read_pc(cpu, mem);
+        cpu->trace.instr.op.imm.value = val;
+        return val;
+    }
 
     return cpu_read_mem(cpu, mem, op.addr);
 }
@@ -227,8 +271,10 @@ static void cpu_write_operand(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_ora(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "ORA";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     cpu->a |= cpu_read_operand(cpu, mem, op);
 
@@ -237,8 +283,10 @@ static void cpu_instr_ora(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_and(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "AND";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     cpu->a &= cpu_read_operand(cpu, mem, op);
 
@@ -247,8 +295,10 @@ static void cpu_instr_and(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_eor(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "EOR";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     cpu->a ^= cpu_read_operand(cpu, mem, op);
 
@@ -257,8 +307,10 @@ static void cpu_instr_eor(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_adc(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "ADC";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     u8 rhs = cpu_read_operand(cpu, mem, op);
 
@@ -279,15 +331,19 @@ static void cpu_instr_adc(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_sta(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "STA";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     cpu_write_operand(cpu, mem, op, cpu->a);
 }
 
 static void cpu_instr_lda(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "LDA";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     cpu->a = cpu_read_operand(cpu, mem, op);
 
@@ -296,8 +352,10 @@ static void cpu_instr_lda(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_cmp(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "CMP";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     u8 rhs = cpu_read_operand(cpu, mem, op);
 
@@ -310,8 +368,10 @@ static void cpu_instr_cmp(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_cpx(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "CPX";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     u8 rhs = cpu_read_operand(cpu, mem, op);
 
@@ -324,8 +384,10 @@ static void cpu_instr_cpx(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_cpy(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "CPY";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     u8 rhs = cpu_read_operand(cpu, mem, op);
 
@@ -338,8 +400,10 @@ static void cpu_instr_cpy(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_sbc(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "SBC";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     u8 rhs = cpu_read_operand(cpu, mem, op);
 
@@ -360,8 +424,10 @@ static void cpu_instr_sbc(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_asl(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "ASL";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     u8 val = cpu_read_operand(cpu, mem, op);
 
@@ -376,8 +442,10 @@ static void cpu_instr_asl(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_lsr(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "LSR";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     u8 val = cpu_read_operand(cpu, mem, op);
 
@@ -392,8 +460,10 @@ static void cpu_instr_lsr(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_rol(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "ROL";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     u8 val = cpu_read_operand(cpu, mem, op);
 
@@ -409,8 +479,10 @@ static void cpu_instr_rol(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_ror(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "ROR";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     u8 val = cpu_read_operand(cpu, mem, op);
 
@@ -426,22 +498,28 @@ static void cpu_instr_ror(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_stx(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "STX";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     cpu_write_operand(cpu, mem, op, cpu->x);
 }
 
 static void cpu_instr_sty(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "STY";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     cpu_write_operand(cpu, mem, op, cpu->y);
 }
 
 static void cpu_instr_ldx(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "LDX";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     cpu->x = cpu_read_operand(cpu, mem, op);
 
@@ -450,8 +528,10 @@ static void cpu_instr_ldx(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_ldy(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "LDY";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     cpu->y = cpu_read_operand(cpu, mem, op);
 
@@ -460,8 +540,10 @@ static void cpu_instr_ldy(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_lax(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "LAX";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     cpu->a = cpu_read_operand(cpu, mem, op);
     cpu->x = cpu->a;
@@ -471,15 +553,19 @@ static void cpu_instr_lax(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_sax(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "SAX";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     cpu_write_operand(cpu, mem, op, cpu->a & cpu->x);
 }
 
 static void cpu_instr_dec(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "DEC";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     u8 val = cpu_read_operand(cpu, mem, op);
 
@@ -493,8 +579,10 @@ static void cpu_instr_dec(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_inc(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "INC";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     u8 val = cpu_read_operand(cpu, mem, op);
 
@@ -508,15 +596,19 @@ static void cpu_instr_inc(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_jmp(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "JMP";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     cpu->pc = op.addr;
 }
 
 static void cpu_instr_bit(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "BIT";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     u8 val = cpu_read_operand(cpu, mem, op);
 
@@ -528,33 +620,49 @@ static void cpu_instr_bit(struct cpu_t cpu[static 1], struct memory_t mem,
 static void cpu_instr_bxx(struct cpu_t cpu[static 1], struct memory_t mem,
                           u8 flag, bool exp_val)
 {
+    static const char *MNEMONICS[][2] = {
+        [FLAG_C] = {"BCC", "BCS"},
+        [FLAG_Z] = {"BNE", "BEQ"},
+        [FLAG_V] = {"BVC", "BVS"},
+        [FLAG_N] = {"BPL", "BMI"},
+    };
+    cpu->trace.instr.mnemonic = MNEMONICS[flag][exp_val];
+
     i8 offset = (i8)cpu_read_pc(cpu, mem);
+    u16 target = cpu->pc + offset;
+
+    cpu->trace.instr.op.kind = OP_ADDR;
+    cpu->trace.instr.op.addr.addr = target;
 
     bool flag_val = (cpu->p & flag) != 0;
 
     if (flag_val == exp_val) {
         ++cpu->cyc;
 
-        if ((cpu->pc & 0xFF00) != ((cpu->pc + offset) & 0xFF00))
+        if ((cpu->pc & 0xFF00) != (target & 0xFF00))
             ++cpu->cyc;
 
-        cpu->pc += offset;
+        cpu->pc = target;
     }
 }
 
 static void cpu_instr_nop(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "NOP";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     if (op_kind != OP_IMPL)
         cpu_read_operand(cpu, mem, op);
-
-    ++cpu->cyc;
+    else
+        ++cpu->cyc;
 }
 
 static void cpu_instr_dcp(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "DCP";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     u8 rhs = cpu_read_operand(cpu, mem, op);
     --rhs;
@@ -569,9 +677,11 @@ static void cpu_instr_dcp(struct cpu_t cpu[static 1], struct memory_t mem,
     set_bits(&cpu->p, FLAG_C, !borrow);
 }
 
-static void cpu_instr_isc(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+static void cpu_instr_isb(struct cpu_t cpu[static 1], struct memory_t mem,
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "ISB";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     u8 rhs = cpu_read_operand(cpu, mem, op);
     ++rhs;
@@ -595,8 +705,10 @@ static void cpu_instr_isc(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_rla(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "RLA";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     u8 val = cpu_read_operand(cpu, mem, op);
 
@@ -613,8 +725,10 @@ static void cpu_instr_rla(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_slo(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "SLO";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     u8 val = cpu_read_operand(cpu, mem, op);
 
@@ -630,8 +744,10 @@ static void cpu_instr_slo(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_sre(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "SRE";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     u8 val = cpu_read_operand(cpu, mem, op);
 
@@ -646,8 +762,10 @@ static void cpu_instr_sre(struct cpu_t cpu[static 1], struct memory_t mem,
 }
 
 static void cpu_instr_rra(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum opkind_t op_kind)
+                          enum cpu_op_kind_t op_kind)
 {
+    cpu->trace.instr.mnemonic = "RRA";
+
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     u8 val = cpu_read_operand(cpu, mem, op);
 
@@ -674,46 +792,69 @@ static void cpu_instr_rra(struct cpu_t cpu[static 1], struct memory_t mem,
 
 void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
 {
-    u16 pc_start = cpu->pc;
+    cpu->trace = (struct cpu_trace_t){
+        .instr = {.op.kind = OP_IMPL,
+                  .mnemonic = "?",
+                  .bytes_cnt = 0,
+                  .bytes = {},
+                  .illegal = false},
+        .cyc = cpu->cyc,
+        .pc = cpu->pc,
+        .s = cpu->s,
+        .a = cpu->a,
+        .x = cpu->x,
+        .y = cpu->y,
+        .p = cpu->p,
+    };
+
     u8 opcode = cpu_read_pc(cpu, mem);
 
     switch (opcode) {
         case 0x18: // clc
+            cpu->trace.instr.mnemonic = "CLC";
             set_bits(&cpu->p, FLAG_C, false);
             ++cpu->cyc;
             break;
         case 0x38: // sec
+            cpu->trace.instr.mnemonic = "SEC";
             set_bits(&cpu->p, FLAG_C, true);
             ++cpu->cyc;
             break;
         case 0x58: // cli
+            cpu->trace.instr.mnemonic = "CLI";
             set_bits(&cpu->p, FLAG_I, false);
             ++cpu->cyc;
             break;
         case 0x78: // sei
+            cpu->trace.instr.mnemonic = "SEI";
             set_bits(&cpu->p, FLAG_I, true);
             ++cpu->cyc;
             break;
         case 0xB8: // clv
+            cpu->trace.instr.mnemonic = "CLV";
             set_bits(&cpu->p, FLAG_V, false);
             ++cpu->cyc;
             break;
         case 0xD8: // cld
+            cpu->trace.instr.mnemonic = "CLD";
             set_bits(&cpu->p, FLAG_D, false);
             ++cpu->cyc;
             break;
         case 0xF8: // sed
+            cpu->trace.instr.mnemonic = "SED";
             set_bits(&cpu->p, FLAG_D, true);
             ++cpu->cyc;
             break;
 
         case 0x98: // tya
+            cpu->trace.instr.mnemonic = "TYA";
             cpu->a = cpu->y;
             set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
             ++cpu->cyc;
             break;
         case 0xA8: // tay
+            cpu->trace.instr.mnemonic = "TAY";
             cpu->y = cpu->a;
             set_bits(&cpu->p, FLAG_N, (cpu->y & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->y == 0);
@@ -721,22 +862,26 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
             break;
 
         case 0x8A: // txa
+            cpu->trace.instr.mnemonic = "TXA";
             cpu->a = cpu->x;
             set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
             ++cpu->cyc;
             break;
         case 0x9A: // txs
+            cpu->trace.instr.mnemonic = "TXS";
             cpu->s = cpu->x;
             ++cpu->cyc;
             break;
         case 0xAA: // tax
+            cpu->trace.instr.mnemonic = "TAX";
             cpu->x = cpu->a;
             set_bits(&cpu->p, FLAG_N, (cpu->x & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->x == 0);
             ++cpu->cyc;
             break;
         case 0xBA: // tsx
+            cpu->trace.instr.mnemonic = "TSX";
             cpu->x = cpu->s;
             set_bits(&cpu->p, FLAG_N, (cpu->x & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->x == 0);
@@ -744,19 +889,24 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
             break;
 
         case 0x08: // php
+            cpu->trace.instr.mnemonic = "PHP";
+
             // p must be pushed with break flag and bit 5 set
             cpu_st_push(cpu, mem, cpu->p | FLAG_B);
             ++cpu->cyc;
             break;
         case 0x28: // plp
+            cpu->trace.instr.mnemonic = "PLP";
             cpu->p = (cpu_st_pull(cpu, mem) & ~FLAG_B) | FLAG_5;
             ++cpu->cyc;
             break;
         case 0x48: // pha
+            cpu->trace.instr.mnemonic = "PHA";
             cpu_st_push(cpu, mem, cpu->a);
             ++cpu->cyc;
             break;
         case 0x68: // pla
+            cpu->trace.instr.mnemonic = "PLA";
             cpu->a = cpu_st_pull(cpu, mem);
             set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
@@ -764,24 +914,28 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
             break;
 
         case 0xE8: // inx
+            cpu->trace.instr.mnemonic = "INX";
             ++cpu->x;
             ++cpu->cyc;
             set_bits(&cpu->p, FLAG_N, (cpu->x & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->x == 0);
             break;
         case 0xCA: // dex
+            cpu->trace.instr.mnemonic = "DEX";
             --cpu->x;
             ++cpu->cyc;
             set_bits(&cpu->p, FLAG_N, (cpu->x & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->x == 0);
             break;
         case 0xC8: // iny
+            cpu->trace.instr.mnemonic = "INY";
             ++cpu->y;
             ++cpu->cyc;
             set_bits(&cpu->p, FLAG_N, (cpu->y & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->y == 0);
             break;
         case 0x88: // dey
+            cpu->trace.instr.mnemonic = "DEY";
             --cpu->y;
             ++cpu->cyc;
             set_bits(&cpu->p, FLAG_N, (cpu->y & 0x80) != 0);
@@ -789,13 +943,16 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
             break;
 
         case 0x20: // jsr
-            u16 addr = cpu_read_pc_u16(cpu, mem);
+            cpu->trace.instr.mnemonic = "JSR";
+            struct operand_t op = cpu_compute_operand(cpu, mem, OP_ADDR, false);
+
             cpu_st_push_u16(cpu, mem, cpu->pc - 1);
-            cpu->pc = addr;
+            cpu->pc = op.addr;
             ++cpu->cyc;
             break;
 
         case 0x00: // brk
+            cpu->trace.instr.mnemonic = "BRK";
             cpu_st_push_u16(cpu, mem, cpu->pc);
             cpu_st_push(cpu, mem, cpu->p | FLAG_B);
 
@@ -806,11 +963,13 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
             break;
 
         case 0x60: // rts
+            cpu->trace.instr.mnemonic = "RTS";
             cpu->pc = cpu_st_pull_u16(cpu, mem) + 1;
             cpu->cyc += 2;
             break;
 
         case 0x40: // rti
+            cpu->trace.instr.mnemonic = "RTI";
             cpu->p = (cpu_st_pull(cpu, mem) & ~FLAG_B) | FLAG_5;
             cpu->pc = cpu_st_pull_u16(cpu, mem);
             break;
@@ -821,7 +980,7 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
         case 0x24: cpu_instr_bit(cpu, mem, OP_ZPG); break;
         case 0x2C: cpu_instr_bit(cpu, mem, OP_ABS); break;
 
-        case 0x4C: cpu_instr_jmp(cpu, mem, OP_ABS); break;
+        case 0x4C: cpu_instr_jmp(cpu, mem, OP_ADDR); break;
         case 0x6C: cpu_instr_jmp(cpu, mem, OP_IND); break;
 
         case 0x10: cpu_instr_bxx(cpu, mem, FLAG_N, false); break; // bpl
@@ -965,101 +1124,108 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
         case 0xEE: cpu_instr_inc(cpu, mem, OP_ABS); break;
         case 0xF6: cpu_instr_inc(cpu, mem, OP_ZPG_X); break;
         case 0xFE: cpu_instr_inc(cpu, mem, OP_ABS_X); break;
-
-        case 0x1A: cpu_instr_nop(cpu, mem, OP_IMPL); break;
-        case 0x3A: cpu_instr_nop(cpu, mem, OP_IMPL); break;
-        case 0x5A: cpu_instr_nop(cpu, mem, OP_IMPL); break;
-        case 0x7A: cpu_instr_nop(cpu, mem, OP_IMPL); break;
-        case 0xDA: cpu_instr_nop(cpu, mem, OP_IMPL); break;
-        case 0xFA: cpu_instr_nop(cpu, mem, OP_IMPL); break;
-        case 0x80: cpu_instr_nop(cpu, mem, OP_IMM); break;
-        case 0x82: cpu_instr_nop(cpu, mem, OP_IMM); break;
-        case 0x89: cpu_instr_nop(cpu, mem, OP_IMM); break;
-        case 0xC2: cpu_instr_nop(cpu, mem, OP_IMM); break;
-        case 0xE2: cpu_instr_nop(cpu, mem, OP_IMM); break;
-        case 0x04: cpu_instr_nop(cpu, mem, OP_ZPG); break;
-        case 0x44: cpu_instr_nop(cpu, mem, OP_ZPG); break;
-        case 0x64: cpu_instr_nop(cpu, mem, OP_ZPG); break;
-        case 0x14: cpu_instr_nop(cpu, mem, OP_ZPG_X); break;
-        case 0x34: cpu_instr_nop(cpu, mem, OP_ZPG_X); break;
-        case 0x54: cpu_instr_nop(cpu, mem, OP_ZPG_X); break;
-        case 0x74: cpu_instr_nop(cpu, mem, OP_ZPG_X); break;
-        case 0xD4: cpu_instr_nop(cpu, mem, OP_ZPG_X); break;
-        case 0xF4: cpu_instr_nop(cpu, mem, OP_ZPG_X); break;
-        case 0x0C: cpu_instr_nop(cpu, mem, OP_ABS); break;
-        case 0x1C: cpu_instr_nop(cpu, mem, OP_ABS_X); break;
-        case 0x3C: cpu_instr_nop(cpu, mem, OP_ABS_X); break;
-        case 0x5C: cpu_instr_nop(cpu, mem, OP_ABS_X); break;
-        case 0x7C: cpu_instr_nop(cpu, mem, OP_ABS_X); break;
-        case 0xDC: cpu_instr_nop(cpu, mem, OP_ABS_X); break;
-        case 0xFC: cpu_instr_nop(cpu, mem, OP_ABS_X); break;
-
-        case 0xA7: cpu_instr_lax(cpu, mem, OP_ZPG); break;
-        case 0xB7: cpu_instr_lax(cpu, mem, OP_ZPG_Y); break;
-        case 0xAF: cpu_instr_lax(cpu, mem, OP_ABS); break;
-        case 0xBF: cpu_instr_lax(cpu, mem, OP_ABS_Y); break;
-        case 0xA3: cpu_instr_lax(cpu, mem, OP_X_IND); break;
-        case 0xB3: cpu_instr_lax(cpu, mem, OP_IND_Y); break;
-
-        case 0x87: cpu_instr_sax(cpu, mem, OP_ZPG); break;
-        case 0x97: cpu_instr_sax(cpu, mem, OP_ZPG_Y); break;
-        case 0x8F: cpu_instr_sax(cpu, mem, OP_ABS); break;
-        case 0x83: cpu_instr_sax(cpu, mem, OP_X_IND); break;
-
-        case 0xEB: cpu_instr_sbc(cpu, mem, OP_IMM); break;
-
-        case 0xC7: cpu_instr_dcp(cpu, mem, OP_ZPG); break;
-        case 0xD7: cpu_instr_dcp(cpu, mem, OP_ZPG_X); break;
-        case 0xCF: cpu_instr_dcp(cpu, mem, OP_ABS); break;
-        case 0xDF: cpu_instr_dcp(cpu, mem, OP_ABS_X); break;
-        case 0xDB: cpu_instr_dcp(cpu, mem, OP_ABS_Y); break;
-        case 0xC3: cpu_instr_dcp(cpu, mem, OP_X_IND); break;
-        case 0xD3: cpu_instr_dcp(cpu, mem, OP_IND_Y); break;
-
-        case 0xE7: cpu_instr_isc(cpu, mem, OP_ZPG); break;
-        case 0xF7: cpu_instr_isc(cpu, mem, OP_ZPG_X); break;
-        case 0xEF: cpu_instr_isc(cpu, mem, OP_ABS); break;
-        case 0xFF: cpu_instr_isc(cpu, mem, OP_ABS_X); break;
-        case 0xFB: cpu_instr_isc(cpu, mem, OP_ABS_Y); break;
-        case 0xE3: cpu_instr_isc(cpu, mem, OP_X_IND); break;
-        case 0xF3: cpu_instr_isc(cpu, mem, OP_IND_Y); break;
-
-        case 0x27: cpu_instr_rla(cpu, mem, OP_ZPG); break;
-        case 0x37: cpu_instr_rla(cpu, mem, OP_ZPG_X); break;
-        case 0x2F: cpu_instr_rla(cpu, mem, OP_ABS); break;
-        case 0x3F: cpu_instr_rla(cpu, mem, OP_ABS_X); break;
-        case 0x3B: cpu_instr_rla(cpu, mem, OP_ABS_Y); break;
-        case 0x23: cpu_instr_rla(cpu, mem, OP_X_IND); break;
-        case 0x33: cpu_instr_rla(cpu, mem, OP_IND_Y); break;
-
-        case 0x07: cpu_instr_slo(cpu, mem, OP_ZPG); break;
-        case 0x17: cpu_instr_slo(cpu, mem, OP_ZPG_X); break;
-        case 0x0F: cpu_instr_slo(cpu, mem, OP_ABS); break;
-        case 0x1F: cpu_instr_slo(cpu, mem, OP_ABS_X); break;
-        case 0x1B: cpu_instr_slo(cpu, mem, OP_ABS_Y); break;
-        case 0x03: cpu_instr_slo(cpu, mem, OP_X_IND); break;
-        case 0x13: cpu_instr_slo(cpu, mem, OP_IND_Y); break;
-
-        case 0x47: cpu_instr_sre(cpu, mem, OP_ZPG); break;
-        case 0x57: cpu_instr_sre(cpu, mem, OP_ZPG_X); break;
-        case 0x4F: cpu_instr_sre(cpu, mem, OP_ABS); break;
-        case 0x5F: cpu_instr_sre(cpu, mem, OP_ABS_X); break;
-        case 0x5B: cpu_instr_sre(cpu, mem, OP_ABS_Y); break;
-        case 0x43: cpu_instr_sre(cpu, mem, OP_X_IND); break;
-        case 0x53: cpu_instr_sre(cpu, mem, OP_IND_Y); break;
-
-        case 0x67: cpu_instr_rra(cpu, mem, OP_ZPG); break;
-        case 0x77: cpu_instr_rra(cpu, mem, OP_ZPG_X); break;
-        case 0x6F: cpu_instr_rra(cpu, mem, OP_ABS); break;
-        case 0x7F: cpu_instr_rra(cpu, mem, OP_ABS_X); break;
-        case 0x7B: cpu_instr_rra(cpu, mem, OP_ABS_Y); break;
-        case 0x63: cpu_instr_rra(cpu, mem, OP_X_IND); break;
-        case 0x73: cpu_instr_rra(cpu, mem, OP_IND_Y); break;
             // clang-format on
 
         default:
-            PANIC("Invalid opcode (pc = $%04X, opcode = $%02X)\n", pc_start,
-                  opcode);
+            cpu->trace.instr.illegal = true;
+
+            switch (opcode) {
+                    // clang-format off
+                case 0x1A: cpu_instr_nop(cpu, mem, OP_IMPL); break;
+                case 0x3A: cpu_instr_nop(cpu, mem, OP_IMPL); break;
+                case 0x5A: cpu_instr_nop(cpu, mem, OP_IMPL); break;
+                case 0x7A: cpu_instr_nop(cpu, mem, OP_IMPL); break;
+                case 0xDA: cpu_instr_nop(cpu, mem, OP_IMPL); break;
+                case 0xFA: cpu_instr_nop(cpu, mem, OP_IMPL); break;
+                case 0x80: cpu_instr_nop(cpu, mem, OP_IMM); break;
+                case 0x82: cpu_instr_nop(cpu, mem, OP_IMM); break;
+                case 0x89: cpu_instr_nop(cpu, mem, OP_IMM); break;
+                case 0xC2: cpu_instr_nop(cpu, mem, OP_IMM); break;
+                case 0xE2: cpu_instr_nop(cpu, mem, OP_IMM); break;
+                case 0x04: cpu_instr_nop(cpu, mem, OP_ZPG); break;
+                case 0x44: cpu_instr_nop(cpu, mem, OP_ZPG); break;
+                case 0x64: cpu_instr_nop(cpu, mem, OP_ZPG); break;
+                case 0x14: cpu_instr_nop(cpu, mem, OP_ZPG_X); break;
+                case 0x34: cpu_instr_nop(cpu, mem, OP_ZPG_X); break;
+                case 0x54: cpu_instr_nop(cpu, mem, OP_ZPG_X); break;
+                case 0x74: cpu_instr_nop(cpu, mem, OP_ZPG_X); break;
+                case 0xD4: cpu_instr_nop(cpu, mem, OP_ZPG_X); break;
+                case 0xF4: cpu_instr_nop(cpu, mem, OP_ZPG_X); break;
+                case 0x0C: cpu_instr_nop(cpu, mem, OP_ABS); break;
+                case 0x1C: cpu_instr_nop(cpu, mem, OP_ABS_X); break;
+                case 0x3C: cpu_instr_nop(cpu, mem, OP_ABS_X); break;
+                case 0x5C: cpu_instr_nop(cpu, mem, OP_ABS_X); break;
+                case 0x7C: cpu_instr_nop(cpu, mem, OP_ABS_X); break;
+                case 0xDC: cpu_instr_nop(cpu, mem, OP_ABS_X); break;
+                case 0xFC: cpu_instr_nop(cpu, mem, OP_ABS_X); break;
+
+                case 0xA7: cpu_instr_lax(cpu, mem, OP_ZPG); break;
+                case 0xB7: cpu_instr_lax(cpu, mem, OP_ZPG_Y); break;
+                case 0xAF: cpu_instr_lax(cpu, mem, OP_ABS); break;
+                case 0xBF: cpu_instr_lax(cpu, mem, OP_ABS_Y); break;
+                case 0xA3: cpu_instr_lax(cpu, mem, OP_X_IND); break;
+                case 0xB3: cpu_instr_lax(cpu, mem, OP_IND_Y); break;
+
+                case 0x87: cpu_instr_sax(cpu, mem, OP_ZPG); break;
+                case 0x97: cpu_instr_sax(cpu, mem, OP_ZPG_Y); break;
+                case 0x8F: cpu_instr_sax(cpu, mem, OP_ABS); break;
+                case 0x83: cpu_instr_sax(cpu, mem, OP_X_IND); break;
+
+                case 0xEB: cpu_instr_sbc(cpu, mem, OP_IMM); break;
+
+                case 0xC7: cpu_instr_dcp(cpu, mem, OP_ZPG); break;
+                case 0xD7: cpu_instr_dcp(cpu, mem, OP_ZPG_X); break;
+                case 0xCF: cpu_instr_dcp(cpu, mem, OP_ABS); break;
+                case 0xDF: cpu_instr_dcp(cpu, mem, OP_ABS_X); break;
+                case 0xDB: cpu_instr_dcp(cpu, mem, OP_ABS_Y); break;
+                case 0xC3: cpu_instr_dcp(cpu, mem, OP_X_IND); break;
+                case 0xD3: cpu_instr_dcp(cpu, mem, OP_IND_Y); break;
+
+                case 0xE7: cpu_instr_isb(cpu, mem, OP_ZPG); break;
+                case 0xF7: cpu_instr_isb(cpu, mem, OP_ZPG_X); break;
+                case 0xEF: cpu_instr_isb(cpu, mem, OP_ABS); break;
+                case 0xFF: cpu_instr_isb(cpu, mem, OP_ABS_X); break;
+                case 0xFB: cpu_instr_isb(cpu, mem, OP_ABS_Y); break;
+                case 0xE3: cpu_instr_isb(cpu, mem, OP_X_IND); break;
+                case 0xF3: cpu_instr_isb(cpu, mem, OP_IND_Y); break;
+
+                case 0x27: cpu_instr_rla(cpu, mem, OP_ZPG); break;
+                case 0x37: cpu_instr_rla(cpu, mem, OP_ZPG_X); break;
+                case 0x2F: cpu_instr_rla(cpu, mem, OP_ABS); break;
+                case 0x3F: cpu_instr_rla(cpu, mem, OP_ABS_X); break;
+                case 0x3B: cpu_instr_rla(cpu, mem, OP_ABS_Y); break;
+                case 0x23: cpu_instr_rla(cpu, mem, OP_X_IND); break;
+                case 0x33: cpu_instr_rla(cpu, mem, OP_IND_Y); break;
+
+                case 0x07: cpu_instr_slo(cpu, mem, OP_ZPG); break;
+                case 0x17: cpu_instr_slo(cpu, mem, OP_ZPG_X); break;
+                case 0x0F: cpu_instr_slo(cpu, mem, OP_ABS); break;
+                case 0x1F: cpu_instr_slo(cpu, mem, OP_ABS_X); break;
+                case 0x1B: cpu_instr_slo(cpu, mem, OP_ABS_Y); break;
+                case 0x03: cpu_instr_slo(cpu, mem, OP_X_IND); break;
+                case 0x13: cpu_instr_slo(cpu, mem, OP_IND_Y); break;
+
+                case 0x47: cpu_instr_sre(cpu, mem, OP_ZPG); break;
+                case 0x57: cpu_instr_sre(cpu, mem, OP_ZPG_X); break;
+                case 0x4F: cpu_instr_sre(cpu, mem, OP_ABS); break;
+                case 0x5F: cpu_instr_sre(cpu, mem, OP_ABS_X); break;
+                case 0x5B: cpu_instr_sre(cpu, mem, OP_ABS_Y); break;
+                case 0x43: cpu_instr_sre(cpu, mem, OP_X_IND); break;
+                case 0x53: cpu_instr_sre(cpu, mem, OP_IND_Y); break;
+
+                case 0x67: cpu_instr_rra(cpu, mem, OP_ZPG); break;
+                case 0x77: cpu_instr_rra(cpu, mem, OP_ZPG_X); break;
+                case 0x6F: cpu_instr_rra(cpu, mem, OP_ABS); break;
+                case 0x7F: cpu_instr_rra(cpu, mem, OP_ABS_X); break;
+                case 0x7B: cpu_instr_rra(cpu, mem, OP_ABS_Y); break;
+                case 0x63: cpu_instr_rra(cpu, mem, OP_X_IND); break;
+                case 0x73: cpu_instr_rra(cpu, mem, OP_IND_Y); break;
+                    // clang-format on
+                    //
+                default:
+                    PANIC("Invalid opcode (pc = $%04X, opcode = $%02X)\n",
+                          cpu->trace.pc, opcode);
+            }
     }
 }
 
