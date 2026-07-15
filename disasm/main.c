@@ -39,7 +39,7 @@ static bool parse_args(int argc, char *argv[static 1],
 
     int opt = -1;
 
-    while ((opt = getopt_long(argc, argv, "hb:l:", OPTIONS, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "h", OPTIONS, nullptr)) != -1) {
         switch (opt) {
             case 'h':
                 out_args->help = true;
