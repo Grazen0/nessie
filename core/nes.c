@@ -702,7 +702,7 @@ u64 nes_dispatch_cpu(struct nes_t *nes)
 
     bool irq = nes->irq_apu_dmc || nes->irq_apu_fc;
 
-    u64 start_cycles = nes->cpu.cycles;
+    u64 start_cycles = nes->cpu.cyc;
 
     if (irq) {
         printf("irq\n");
@@ -711,7 +711,7 @@ u64 nes_dispatch_cpu(struct nes_t *nes)
 
     cpu_step(&nes->cpu, nes_as_memory(nes));
 
-    return CPU_CLK_RATIO * (nes->cpu.cycles - start_cycles);
+    return CPU_CLK_RATIO * (nes->cpu.cyc - start_cycles);
 }
 
 u64 nes_dispatch_pixel(struct nes_t *nes)

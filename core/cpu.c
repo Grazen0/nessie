@@ -21,14 +21,14 @@ enum cpu_flag_t : u8 {
 static u8 cpu_read_mem(struct cpu_t cpu[static 1], struct memory_t mem,
                        u16 addr)
 {
-    ++cpu->cycles;
+    ++cpu->cyc;
     return memory_read(mem, addr);
 }
 
 static void cpu_write_mem(struct cpu_t cpu[static 1], struct memory_t mem,
                           u16 addr, u8 value)
 {
-    ++cpu->cycles;
+    ++cpu->cyc;
     memory_write(mem, addr, value);
 }
 
@@ -83,7 +83,7 @@ static void cpu_st_push_u16(struct cpu_t cpu[static 1], struct memory_t mem,
 static u8 cpu_st_pull(struct cpu_t cpu[static 1], struct memory_t mem)
 {
     ++cpu->s;
-    ++cpu->cycles;
+    ++cpu->cyc;
     return cpu_read_mem(cpu, mem, cpu_sp(cpu));
 }
 
@@ -91,7 +91,7 @@ static u16 cpu_st_pull_u16(struct cpu_t cpu[static 1], struct memory_t mem)
 {
     u16 lo = cpu_st_pull(cpu, mem);
     u16 hi = cpu_st_pull(cpu, mem);
-    --cpu->cycles;
+    --cpu->cyc;
     return lo | (hi << 8);
 }
 
@@ -146,11 +146,11 @@ static struct operand_t cpu_compute_operand(struct cpu_t cpu[static 1],
             break;
         case OP_ZPG_X: // 2 cycles
             op.addr = (cpu_read_pc(cpu, mem) + cpu->x) & 0xFF;
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
         case OP_ZPG_Y: // 2 cycles
             op.addr = (cpu_read_pc(cpu, mem) + cpu->y) & 0xFF;
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
         case OP_ABS: // 2 cycles
             op.addr = cpu_read_pc_u16(cpu, mem);
@@ -158,7 +158,7 @@ static struct operand_t cpu_compute_operand(struct cpu_t cpu[static 1],
         case OP_ABS_X: { // 2+ cycles
             u16 base = cpu_read_pc_u16(cpu, mem);
             if (is_write || (base & 0xFF) + cpu->x >= 0x100)
-                ++cpu->cycles;
+                ++cpu->cyc;
 
             op.addr = base + cpu->x;
             break;
@@ -166,7 +166,7 @@ static struct operand_t cpu_compute_operand(struct cpu_t cpu[static 1],
         case OP_ABS_Y: { // 2+ cycles
             u16 base = cpu_read_pc_u16(cpu, mem);
             if (is_write || (base & 0xFF) + cpu->y >= 0x100)
-                ++cpu->cycles;
+                ++cpu->cyc;
 
             op.addr = base + cpu->y;
             break;
@@ -178,7 +178,7 @@ static struct operand_t cpu_compute_operand(struct cpu_t cpu[static 1],
         }
         case OP_X_IND: { // 4 cycles
             u8 ind_addr = cpu_read_pc(cpu, mem) + cpu->x;
-            ++cpu->cycles;
+            ++cpu->cyc;
 
             op.addr = cpu_read_zpg_u16(cpu, mem, ind_addr);
             break;
@@ -188,7 +188,7 @@ static struct operand_t cpu_compute_operand(struct cpu_t cpu[static 1],
             u16 addr = cpu_read_zpg_u16(cpu, mem, ind_addr);
 
             if (is_write || (addr & 0xFF) + cpu->y >= 0x100)
-                ++cpu->cycles;
+                ++cpu->cyc;
 
             op.addr = addr + cpu->y;
             break;
@@ -366,7 +366,7 @@ static void cpu_instr_asl(struct cpu_t cpu[static 1], struct memory_t mem,
     u8 val = cpu_read_operand(cpu, mem, op);
 
     u8 val_new = val << 1;
-    ++cpu->cycles;
+    ++cpu->cyc;
 
     cpu_write_operand(cpu, mem, op, val_new);
 
@@ -382,7 +382,7 @@ static void cpu_instr_lsr(struct cpu_t cpu[static 1], struct memory_t mem,
     u8 val = cpu_read_operand(cpu, mem, op);
 
     u8 val_new = val >> 1;
-    ++cpu->cycles;
+    ++cpu->cyc;
 
     cpu_write_operand(cpu, mem, op, val_new);
 
@@ -399,7 +399,7 @@ static void cpu_instr_rol(struct cpu_t cpu[static 1], struct memory_t mem,
 
     u8 in_bit = (cpu->p & FLAG_C) != 0 ? 1 : 0;
     u8 val_new = (val << 1) | in_bit;
-    ++cpu->cycles;
+    ++cpu->cyc;
 
     cpu_write_operand(cpu, mem, op, val_new);
 
@@ -416,7 +416,7 @@ static void cpu_instr_ror(struct cpu_t cpu[static 1], struct memory_t mem,
 
     u8 in_bit = (cpu->p & FLAG_C) != 0 ? 1 : 0;
     u8 val_new = (val >> 1) | (in_bit << 7);
-    ++cpu->cycles;
+    ++cpu->cyc;
 
     cpu_write_operand(cpu, mem, op, val_new);
 
@@ -484,7 +484,7 @@ static void cpu_instr_dec(struct cpu_t cpu[static 1], struct memory_t mem,
     u8 val = cpu_read_operand(cpu, mem, op);
 
     --val;
-    ++cpu->cycles;
+    ++cpu->cyc;
 
     cpu_write_operand(cpu, mem, op, val);
 
@@ -499,7 +499,7 @@ static void cpu_instr_inc(struct cpu_t cpu[static 1], struct memory_t mem,
     u8 val = cpu_read_operand(cpu, mem, op);
 
     ++val;
-    ++cpu->cycles;
+    ++cpu->cyc;
 
     cpu_write_operand(cpu, mem, op, val);
 
@@ -533,10 +533,10 @@ static void cpu_instr_bxx(struct cpu_t cpu[static 1], struct memory_t mem,
     bool flag_val = (cpu->p & flag) != 0;
 
     if (flag_val == exp_val) {
-        ++cpu->cycles;
+        ++cpu->cyc;
 
         if ((cpu->pc & 0xFF00) != ((cpu->pc + offset) & 0xFF00))
-            ++cpu->cycles;
+            ++cpu->cyc;
 
         cpu->pc += offset;
     }
@@ -549,7 +549,7 @@ static void cpu_instr_nop(struct cpu_t cpu[static 1], struct memory_t mem,
     if (op_kind != OP_IMPL)
         cpu_read_operand(cpu, mem, op);
 
-    ++cpu->cycles;
+    ++cpu->cyc;
 }
 
 static void cpu_instr_dcp(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -558,7 +558,7 @@ static void cpu_instr_dcp(struct cpu_t cpu[static 1], struct memory_t mem,
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     u8 rhs = cpu_read_operand(cpu, mem, op);
     --rhs;
-    ++cpu->cycles;
+    ++cpu->cyc;
     cpu_write_operand(cpu, mem, op, rhs);
 
     u8 a_cpy = cpu->a;
@@ -575,7 +575,7 @@ static void cpu_instr_isc(struct cpu_t cpu[static 1], struct memory_t mem,
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, true);
     u8 rhs = cpu_read_operand(cpu, mem, op);
     ++rhs;
-    ++cpu->cycles;
+    ++cpu->cyc;
     cpu_write_operand(cpu, mem, op, rhs);
 
     i8 a_signed = (i8)cpu->a;
@@ -602,7 +602,7 @@ static void cpu_instr_rla(struct cpu_t cpu[static 1], struct memory_t mem,
 
     u8 in_bit = (cpu->p & FLAG_C) != 0 ? 1 : 0;
     u8 val_new = (val << 1) | in_bit;
-    ++cpu->cycles;
+    ++cpu->cyc;
     cpu_write_operand(cpu, mem, op, val_new);
 
     cpu->a &= val_new;
@@ -619,7 +619,7 @@ static void cpu_instr_slo(struct cpu_t cpu[static 1], struct memory_t mem,
     u8 val = cpu_read_operand(cpu, mem, op);
 
     u8 val_new = val << 1;
-    ++cpu->cycles;
+    ++cpu->cyc;
 
     cpu_write_operand(cpu, mem, op, val_new);
     cpu->a |= val_new;
@@ -636,7 +636,7 @@ static void cpu_instr_sre(struct cpu_t cpu[static 1], struct memory_t mem,
     u8 val = cpu_read_operand(cpu, mem, op);
 
     u8 val_new = val >> 1;
-    ++cpu->cycles;
+    ++cpu->cyc;
     cpu_write_operand(cpu, mem, op, val_new);
     cpu->a ^= val_new;
 
@@ -653,7 +653,7 @@ static void cpu_instr_rra(struct cpu_t cpu[static 1], struct memory_t mem,
 
     u8 in_bit = (cpu->p & FLAG_C) != 0 ? 1 : 0;
     u8 val_new = (val >> 1) | (in_bit << 7);
-    ++cpu->cycles;
+    ++cpu->cyc;
     cpu_write_operand(cpu, mem, op, val_new);
 
     i8 a_signed = (i8)cpu->a;
@@ -680,110 +680,110 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
     switch (opcode) {
         case 0x18: // clc
             set_bits(&cpu->p, FLAG_C, false);
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
         case 0x38: // sec
             set_bits(&cpu->p, FLAG_C, true);
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
         case 0x58: // cli
             set_bits(&cpu->p, FLAG_I, false);
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
         case 0x78: // sei
             set_bits(&cpu->p, FLAG_I, true);
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
         case 0xB8: // clv
             set_bits(&cpu->p, FLAG_V, false);
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
         case 0xD8: // cld
             set_bits(&cpu->p, FLAG_D, false);
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
         case 0xF8: // sed
             set_bits(&cpu->p, FLAG_D, true);
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
 
         case 0x98: // tya
             cpu->a = cpu->y;
             set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
         case 0xA8: // tay
             cpu->y = cpu->a;
             set_bits(&cpu->p, FLAG_N, (cpu->y & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->y == 0);
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
 
         case 0x8A: // txa
             cpu->a = cpu->x;
             set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
         case 0x9A: // txs
             cpu->s = cpu->x;
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
         case 0xAA: // tax
             cpu->x = cpu->a;
             set_bits(&cpu->p, FLAG_N, (cpu->x & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->x == 0);
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
         case 0xBA: // tsx
             cpu->x = cpu->s;
             set_bits(&cpu->p, FLAG_N, (cpu->x & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->x == 0);
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
 
         case 0x08: // php
             // p must be pushed with break flag and bit 5 set
             cpu_st_push(cpu, mem, cpu->p | FLAG_B);
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
         case 0x28: // plp
             cpu->p = (cpu_st_pull(cpu, mem) & ~FLAG_B) | FLAG_5;
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
         case 0x48: // pha
             cpu_st_push(cpu, mem, cpu->a);
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
         case 0x68: // pla
             cpu->a = cpu_st_pull(cpu, mem);
             set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
 
         case 0xE8: // inx
             ++cpu->x;
-            ++cpu->cycles;
+            ++cpu->cyc;
             set_bits(&cpu->p, FLAG_N, (cpu->x & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->x == 0);
             break;
         case 0xCA: // dex
             --cpu->x;
-            ++cpu->cycles;
+            ++cpu->cyc;
             set_bits(&cpu->p, FLAG_N, (cpu->x & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->x == 0);
             break;
         case 0xC8: // iny
             ++cpu->y;
-            ++cpu->cycles;
+            ++cpu->cyc;
             set_bits(&cpu->p, FLAG_N, (cpu->y & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->y == 0);
             break;
         case 0x88: // dey
             --cpu->y;
-            ++cpu->cycles;
+            ++cpu->cyc;
             set_bits(&cpu->p, FLAG_N, (cpu->y & 0x80) != 0);
             set_bits(&cpu->p, FLAG_Z, cpu->y == 0);
             break;
@@ -792,7 +792,7 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
             u16 addr = cpu_read_pc_u16(cpu, mem);
             cpu_st_push_u16(cpu, mem, cpu->pc - 1);
             cpu->pc = addr;
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
 
         case 0x00: // brk
@@ -802,12 +802,12 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
             cpu->pc = cpu_read_mem_u16(cpu, mem, IRQ_LOC);
             set_bits(&cpu->p, FLAG_I, true);
 
-            ++cpu->cycles;
+            ++cpu->cyc;
             break;
 
         case 0x60: // rts
             cpu->pc = cpu_st_pull_u16(cpu, mem) + 1;
-            cpu->cycles += 2;
+            cpu->cyc += 2;
             break;
 
         case 0x40: // rti
@@ -1066,8 +1066,10 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
 void cpu_reset(struct cpu_t cpu[static 1], struct memory_t mem)
 {
     cpu->pc = cpu_read_mem_u16(cpu, mem, RES_LOC); // 2 cycles
-    cpu->cycles += 5; // other reset sequence cycles
+    cpu->s = 0xFD; // occurs due to reset sequence internals
     cpu->p |= FLAG_I;
+
+    cpu->cyc += 5; // other reset sequence cycles
 }
 
 bool cpu_request_irq(struct cpu_t cpu[static 1], struct memory_t mem)
@@ -1081,7 +1083,7 @@ bool cpu_request_irq(struct cpu_t cpu[static 1], struct memory_t mem)
     cpu->pc = cpu_read_mem_u16(cpu, mem, IRQ_LOC);
     set_bits(&cpu->p, FLAG_I, true);
 
-    ++cpu->cycles;
+    ++cpu->cyc;
     return true;
 }
 
@@ -1093,5 +1095,5 @@ void cpu_request_nmi(struct cpu_t cpu[static 1], struct memory_t mem)
     cpu->pc = cpu_read_mem_u16(cpu, mem, NMI_LOC);
     set_bits(&cpu->p, FLAG_I, true);
 
-    ++cpu->cycles;
+    ++cpu->cyc;
 }

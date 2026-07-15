@@ -33,7 +33,7 @@ static inline void memory_deinit(struct memory_t mem)
 }
 
 struct cpu_t {
-    size_t cycles;
+    size_t cyc;
     u16 pc;
     u8 s;
     u8 a;
