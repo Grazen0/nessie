@@ -11,6 +11,7 @@ enum cpu_flag_t : u8 {
     FLAG_N = 1 << 7, // negative
     FLAG_V = 1 << 6, // overflow
     FLAG_B = 1 << 4, // break
+    FLAG_5 = 1 << 5, // unused
     FLAG_D = 1 << 3, // decimal
     FLAG_I = 1 << 2, // interrupt disable
     FLAG_Z = 1 << 1, // zero
@@ -56,7 +57,7 @@ static u16 cpu_read_zpg_u16(struct cpu_t cpu[static 1], struct memory_t mem,
 struct cpu_t *cpu_init(struct cpu_t *cpu)
 {
     *cpu = (struct cpu_t){};
-    cpu->p = 1 << 5;
+    cpu->p = FLAG_5;
     return cpu;
 }
 
@@ -744,11 +745,11 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
 
         case 0x08: // php
             // p must be pushed with break flag and bit 5 set
-            cpu_st_push(cpu, mem, cpu->p | FLAG_B | (1 << 5));
+            cpu_st_push(cpu, mem, cpu->p | FLAG_B);
             ++cpu->cycles;
             break;
         case 0x28: // plp
-            cpu->p = (cpu_st_pull(cpu, mem) & ~FLAG_B) | (1 << 5);
+            cpu->p = (cpu_st_pull(cpu, mem) & ~FLAG_B) | FLAG_5;
             ++cpu->cycles;
             break;
         case 0x48: // pha
@@ -796,7 +797,7 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
 
         case 0x00: // brk
             cpu_st_push_u16(cpu, mem, cpu->pc);
-            cpu_st_push(cpu, mem, cpu->p | FLAG_B | (1 << 5));
+            cpu_st_push(cpu, mem, cpu->p | FLAG_B);
 
             cpu->pc = cpu_read_mem_u16(cpu, mem, IRQ_LOC);
             set_bits(&cpu->p, FLAG_I, true);
@@ -810,7 +811,7 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
             break;
 
         case 0x40: // rti
-            cpu->p = (cpu_st_pull(cpu, mem) & ~FLAG_B) | (1 << 5);
+            cpu->p = (cpu_st_pull(cpu, mem) & ~FLAG_B) | FLAG_5;
             cpu->pc = cpu_st_pull_u16(cpu, mem);
             break;
 
@@ -1071,12 +1072,11 @@ void cpu_reset(struct cpu_t cpu[static 1], struct memory_t mem)
 
 bool cpu_request_irq(struct cpu_t cpu[static 1], struct memory_t mem)
 {
-    // TODO: figure out cycle timing for this one
     if ((cpu->p & FLAG_I) != 0)
         return false;
 
     cpu_st_push_u16(cpu, mem, cpu->pc);
-    cpu_st_push(cpu, mem, (cpu->p & ~FLAG_B) | (1 << 5));
+    cpu_st_push(cpu, mem, (cpu->p & ~FLAG_B));
 
     cpu->pc = cpu_read_mem_u16(cpu, mem, IRQ_LOC);
     set_bits(&cpu->p, FLAG_I, true);
@@ -1087,9 +1087,8 @@ bool cpu_request_irq(struct cpu_t cpu[static 1], struct memory_t mem)
 
 void cpu_request_nmi(struct cpu_t cpu[static 1], struct memory_t mem)
 {
-    // TODO: figure out cycle timing for this one
     cpu_st_push_u16(cpu, mem, cpu->pc);
-    cpu_st_push(cpu, mem, (cpu->p & ~FLAG_B) | (1 << 5));
+    cpu_st_push(cpu, mem, (cpu->p & ~FLAG_B));
 
     cpu->pc = cpu_read_mem_u16(cpu, mem, NMI_LOC);
     set_bits(&cpu->p, FLAG_I, true);
