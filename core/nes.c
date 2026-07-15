@@ -80,6 +80,8 @@ enum fc_ctrl_t : u8 {
     FC_CTRL_MODE = 1 << 7,
 };
 
+typedef uint(6) (*scanout_buf_mut_t)[NES_SCREEN_WIDTH];
+
 struct nes_t {
     FILE *log_file;
 
@@ -95,8 +97,7 @@ struct nes_t {
     size_t py;
     u8 *vram;
     u8 *oam;
-    u8 (*scanout_buf)[NES_SCREEN_WIDTH];
-    u16 ppuaddr;
+    scanout_buf_mut_t scanout_buf;
     u8 pal_ram[NES_PAL_RAM_SIZE];
     u8 ppuctrl;
     u8 ppumask;
@@ -104,8 +105,14 @@ struct nes_t {
     u8 oamaddr;
     u8 ppuscroll;
     u8 ppudata_buf;
-    unsigned _BitInt(1) w;
     u64 ppu_cyc;
+    u16 p0_reg;
+    u16 p1_reg;
+
+    uint(15) v;
+    uint(15) t;
+    uint(3) x;
+    uint(1) w;
 
     // apu
     struct pulse_t sq1;
@@ -243,7 +250,7 @@ static void nes_update_joy1(struct nes_t nes[static 1])
 
 static void nes_inc_ppuaddr(struct nes_t nes[static 1])
 {
-    nes->ppuaddr += (nes->ppuctrl & PPUCTRL_VRAM_ADDR_INC) == 0 ? 1 : 32;
+    nes->v += (nes->ppuctrl & PPUCTRL_VRAM_ADDR_INC) == 0 ? 1 : 32;
 }
 
 static u8 nes_read_mem(struct nes_t nes[static 1], u16 addr)
@@ -274,7 +281,7 @@ static u8 nes_read_mem(struct nes_t nes[static 1], u16 addr)
             case 7: {
                 // ppudata is delayed by a buffer
                 u8 data = nes->ppudata_buf;
-                nes->ppudata_buf = nes_read_ppu(nes, nes->ppuaddr);
+                nes->ppudata_buf = nes_read_ppu(nes, nes->v);
                 nes_inc_ppuaddr(nes);
                 return data;
             }
@@ -401,14 +408,14 @@ static void nes_write_mem(struct nes_t nes[static 1], u16 addr, u8 value)
                 return;
             case 6:
                 if (nes->w == 0)
-                    nes->ppuaddr = (nes->ppuaddr & 0x00FF) | ((u16)value << 8);
+                    nes->v = (nes->v & 0x00FF) | ((u16)value << 8);
                 else
-                    nes->ppuaddr = (nes->ppuaddr & 0xFF00) | value;
+                    nes->v = (nes->v & 0xFF00) | value;
 
                 nes->w ^= 1;
                 return;
             case 7:
-                nes_write_ppu(nes, nes->ppuaddr, value);
+                nes_write_ppu(nes, nes->v, value);
                 nes_inc_ppuaddr(nes);
                 return;
             default:
@@ -497,7 +504,7 @@ struct nes_t *nes_init(struct nes_t *nes, FILE *log_file)
     if (vram == nullptr)
         goto err_cleanup_2;
 
-    u8(*scanout_buf)[NES_SCREEN_WIDTH] =
+    scanout_buf_mut_t scanout_buf =
         calloc(NES_SCREEN_HEIGHT, sizeof(scanout_buf[0]));
     if (scanout_buf == nullptr)
         goto err_cleanup_3;
@@ -639,18 +646,18 @@ static void nes_update_scanout_bg(struct nes_t nes[static 1], size_t nt_addr,
     u16 pat_tbl_addr =
         (nes->ppuctrl & PPUCTRL_BG_PAT_ADDR) == 0 ? 0x0000 : 0x1000;
 
-    for (size_t ty = 0; ty < 30; ++ty) {
-        for (size_t tx = 0; tx < 32; ++tx) {
-            size_t dst_x = 8 * tx;
-            size_t dst_y = 8 * ty;
+    for (size_t coarse_y = 0; coarse_y < 30; ++coarse_y) {
+        for (size_t coarse_x = 0; coarse_x < 32; ++coarse_x) {
+            size_t dst_x = 8 * coarse_x;
+            size_t dst_y = 8 * coarse_y;
 
-            u8 t_idx = nes_read_ppu(nes, nt_addr + (ty * 32) + tx);
+            u8 t_idx = nes_read_ppu(nes, nt_addr + (coarse_y * 32) + coarse_x);
             u16 pat_base = pat_tbl_addr + (16ULL * t_idx);
 
-            size_t attr_idx = ((ty / 4) * 8) + (tx / 4);
-            size_t attr_quad = (((ty / 2) % 2) * 2) + ((tx / 2) % 2);
-
+            size_t attr_idx = ((coarse_y << 1) & ~0b111) + (coarse_x >> 2);
             u8 attr = nes_read_ppu(nes, nt_addr + 0x3C0 + attr_idx);
+
+            size_t attr_quad = (coarse_y & 0b10) + ((coarse_x >> 1) & 1);
             u8 pal = (attr >> (2 * attr_quad)) & 0b11;
 
             for (size_t py = 0; py < 8; ++py) {
@@ -928,5 +935,7 @@ void nes_dispatch_dma_cycle(struct nes_t *nes)
     ++nes->dma_cyc;
 }
 
-const u8 (*nes_get_scanout(const struct nes_t *nes))
-    [NES_SCREEN_WIDTH] { return nes->scanout_buf; }
+nes_scanout_buf_t nes_get_scanout(const struct nes_t *nes)
+{
+    return nes->scanout_buf;
+}

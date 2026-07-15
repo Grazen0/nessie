@@ -18,6 +18,8 @@
         abort();                                                            \
     } while (0)
 
+#define uint(n) unsigned _BitInt(n)
+
 typedef uint64_t u64;
 typedef uint32_t u32;
 typedef uint16_t u16;
