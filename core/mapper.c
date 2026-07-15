@@ -106,7 +106,7 @@ static struct mapper_ppu_write_t nrom_mapper_write_ppu_v(void *ptr, u16 addr,
     assert(addr < 0x3000);
 
     if (addr < 0x2000) {
-        result.kind = MAPPER_WRITE_DIRECT;
+        result.kind = MAPPER_WRITE_DONE;
     } else {
         result.kind = MAPPER_WRITE_VRAM;
         result.vram.addr = (addr - 0x2000) % 0x800;

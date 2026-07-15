@@ -20,7 +20,7 @@ struct mapper_ppu_read_t {
 
 struct mapper_ppu_write_t {
     enum {
-        MAPPER_WRITE_DIRECT,
+        MAPPER_WRITE_DONE,
         MAPPER_WRITE_VRAM,
     } kind;
     union {

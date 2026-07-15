@@ -21,13 +21,76 @@ enum dma_state_t : u8 {
     DMA_STATE_WRITE,
 };
 
+struct pulse_t {
+    union {
+        struct {
+            u8 vol;
+            u8 sweep;
+            u8 lo;
+            u8 hi;
+        };
+        u8 data[4];
+    };
+};
+
+struct triangle_t {
+    union {
+        struct {
+            u8 linear;
+            u8 _padding;
+            u8 lo;
+            u8 hi;
+        };
+        u8 data[4];
+    };
+};
+
+struct noise_t {
+    union {
+        struct {
+            u8 vol;
+            u8 _padding;
+            u8 lo;
+            u8 hi;
+        };
+        u8 data[4];
+    };
+};
+
+enum dmc_freq_t : u8 {
+    DMC_FREQ_FREQ = 0x0F,
+    DMC_FREQ_LOOP = 1 << 6,
+    DMC_FREQ_IRQ = 1 << 7,
+};
+
+struct dmc_t {
+    union {
+        struct {
+            u8 freq;
+            u8 raw;
+            u8 start;
+            u8 len;
+        };
+        u8 data[4];
+    };
+};
+
+enum fc_ctrl_t : u8 {
+    FC_CTRL_INT = 1 << 6,
+    FC_CTRL_MODE = 1 << 7,
+};
+
 struct nes_t {
     struct cpu_t cpu;
+    u8 *ram;
+
+    // mapper
     struct mapper_t mapper;
-    enum nes_btn_t btns;
+    bool mapper_init;
+
+    // ppu
     size_t px;
     size_t py;
-    u8 *ram;
     u8 *vram;
     u8 *oam;
     u8 (*scanout_buf)[NES_SCREEN_WIDTH];
@@ -39,16 +102,32 @@ struct nes_t {
     u8 oamaddr;
     u8 ppuscroll;
     u8 ppudata_buf;
+    unsigned _BitInt(1) w;
+
+    // apu
+    struct pulse_t sq1;
+    struct pulse_t sq2;
+    struct triangle_t tri;
+    struct noise_t noise;
+    struct dmc_t dmc;
+    u8 snd_chn_enable;
+    u8 fc_ctrl;
+
+    // input
+    enum nes_btn_t btns;
     u8 joy_strobe;
     u8 joy1;
-    unsigned _BitInt(1) w;
-    bool mapper_init;
 
+    // dma
     enum dma_state_t oamdma_state;
     enum dma_cycle_t dma_cycle;
     u8 oamdma_page;
     u8 dma_counter;
     u8 dma_buf;
+
+    // irq sources
+    bool irq_apu_dmc;
+    bool irq_apu_fc;
 };
 
 static constexpr size_t RAM_SIZE = 0x800;
@@ -126,7 +205,7 @@ static void nes_write_ppu(struct nes_t nes[static 1], u16 addr, u8 value)
         auto result = mapper_write_ppu(nes->mapper, addr, value);
 
         switch (result.kind) {
-            case MAPPER_WRITE_DIRECT:
+            case MAPPER_WRITE_DONE:
                 return;
             case MAPPER_WRITE_VRAM:
                 nes->vram[result.vram.addr] = result.vram.value;
@@ -205,6 +284,9 @@ static u8 nes_read_mem(struct nes_t nes[static 1], u16 addr)
         switch (addr) {
             case 0x4014: // oamdma
                 PANIC("read from $%04X (oamdma)", addr);
+            case 0x4015: // apu frame counter control
+                nes->irq_apu_fc = false;
+                return 0xFF;
             case 0x4016: { // joy1
                 if (nes->joy_strobe != 0)
                     nes_update_joy1(nes);
@@ -278,10 +360,36 @@ static void nes_write_mem(struct nes_t nes[static 1], u16 addr, u8 value)
         }
     }
 
-    if (addr < 0x4018) {
-        if (addr < 0x4014)
-            return; // TODO: implement sound
+    if (addr < 0x4004) { // sq1
+        nes->sq1.data[addr - 0x4000] = value;
+        return;
+    }
 
+    if (addr < 0x4008) { // sq2
+        nes->sq2.data[addr - 0x4004] = value;
+        return;
+    }
+
+    if (addr < 0x400C) { // tri
+        nes->tri.data[addr - 0x4008] = value;
+        return;
+    }
+
+    if (addr < 0x4010) { // noise
+        nes->noise.data[addr - 0x400C] = value;
+        return;
+    }
+
+    if (addr < 0x4014) { // dmc
+        nes->dmc.data[addr - 0x4010] = value;
+
+        if (addr == 0x4010 && (nes->dmc.freq & DMC_FREQ_IRQ) == 0)
+            nes->irq_apu_dmc = false;
+
+        return;
+    }
+
+    if (addr < 0x4018) {
         switch (addr) {
             case 0x4014: // oamdma
                 assert(nes->oamaddr == 0);
@@ -291,7 +399,8 @@ static void nes_write_mem(struct nes_t nes[static 1], u16 addr, u8 value)
                 nes->dma_counter = 0;
                 return;
             case 0x4015:
-                // TODO: implement sound
+                nes->snd_chn_enable = value;
+                nes->irq_apu_dmc = false;
                 return;
             case 0x4016: // joy1
                 nes->joy_strobe = value & 1;
@@ -301,6 +410,7 @@ static void nes_write_mem(struct nes_t nes[static 1], u16 addr, u8 value)
 
                 return;
             case 0x4017:
+                nes->fc_ctrl = value;
                 return;
             default:
                 PANIC("write to $%04X (value = $%02X)", addr, value);
@@ -590,7 +700,15 @@ u64 nes_dispatch_cpu(struct nes_t *nes)
     if (nes->oamdma_state != DMA_STATE_IDLE)
         return CPU_CLK_RATIO; // cpu is halted during oam dma
 
+    bool irq = nes->irq_apu_dmc || nes->irq_apu_fc;
+
     u64 start_cycles = nes->cpu.cycles;
+
+    if (irq) {
+        printf("irq\n");
+        cpu_request_irq(&nes->cpu, nes_as_memory(nes));
+    }
+
     cpu_step(&nes->cpu, nes_as_memory(nes));
 
     return CPU_CLK_RATIO * (nes->cpu.cycles - start_cycles);
@@ -615,6 +733,7 @@ u64 nes_dispatch_pixel(struct nes_t *nes)
 
     if (nes->py == LINE_PRE_RENDER && nes->px == 1) {
         // pre-render
+        printf("ppustatus: $%02X\n", nes->ppustatus);
         set_bits(&nes->ppustatus, PPUSTATUS_VBLANK, false);
         nes_update_scanout(nes);
     }
