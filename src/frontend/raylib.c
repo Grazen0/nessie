@@ -11,7 +11,7 @@
 static void update_pixels(struct nes_t *nes, Texture tex,
                           Color pixels[static tex.width * tex.height])
 {
-    auto scanout = nes_get_scanout(nes);
+    auto scanout = nes_get_frame_buf(nes);
 
     for (size_t y = 0; y < NES_SCREEN_HEIGHT; ++y) {
         for (size_t x = 0; x < NES_SCREEN_WIDTH; ++x) {

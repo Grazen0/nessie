@@ -80,7 +80,7 @@ enum fc_ctrl_t : u8 {
     FC_CTRL_MODE = 1 << 7,
 };
 
-typedef uint(6) (*scanout_buf_mut_t)[NES_SCREEN_WIDTH];
+typedef uint(6) (*frame_buf_mut_t)[NES_SCREEN_WIDTH];
 
 struct nes_t {
     FILE *log_file;
@@ -93,21 +93,28 @@ struct nes_t {
     bool mapper_init;
 
     // ppu
+    u64 ppu_cyc;
     size_t px;
     size_t py;
     u8 *vram;
     u8 *oam;
-    scanout_buf_mut_t scanout_buf;
-    u8 pal_ram[NES_PAL_RAM_SIZE];
+    frame_buf_mut_t frame_buf;
+    uint(6) pal_ram[NES_PAL_RAM_SIZE];
     u8 ppuctrl;
     u8 ppumask;
     u8 ppustatus;
     u8 oamaddr;
-    u8 ppuscroll;
     u8 ppudata_buf;
-    u64 ppu_cyc;
     u16 p0_reg;
     u16 p1_reg;
+    u8 attr_next;
+    u8 tile_id_next;
+    u8 p0_next;
+    u8 p1_next;
+    u8 pal0_reg;
+    u8 pal1_reg;
+    uint(1) pal0_latch;
+    uint(1) pal1_latch;
 
     uint(15) v;
     uint(15) t;
@@ -148,7 +155,6 @@ static constexpr size_t CPU_CLK_RATIO = 12;
 static constexpr size_t PPU_CLK_RATIO = 4;
 
 enum ppuctrl_t : u8 {
-    PPUCTRL_BASE_NT_ADDR = 0b11,
     PPUCTRL_VRAM_ADDR_INC = 1 << 2,
     PPUCTRL_SPR_PAT_ADDR = 1 << 3,
     PPUCTRL_BG_PAT_ADDR = 1 << 4,
@@ -185,7 +191,7 @@ enum joy_t : u8 {
     JOY_RIGHT = 1 << 7,
 };
 
-u8 nes_read_ppu(struct nes_t *nes, u16 addr)
+u8 nes_read_ppu(struct nes_t *nes, uint(14) addr)
 {
     if (addr < 0x3F00) {
         assert(nes->mapper_init);
@@ -201,13 +207,10 @@ u8 nes_read_ppu(struct nes_t *nes, u16 addr)
         unreachable();
     }
 
-    if (addr < 0x4000)
-        return nes->pal_ram[(addr - 0x4000) % NES_PAL_RAM_SIZE];
-
-    PANIC("ppu read from $%04X", addr);
+    return nes->pal_ram[(addr - 0x4000) % NES_PAL_RAM_SIZE];
 }
 
-static void nes_write_ppu(struct nes_t nes[static 1], u16 addr, u8 value)
+static void nes_write_ppu(struct nes_t nes[static 1], uint(14) addr, u8 value)
 {
 
     if (addr < 0x3F00) {
@@ -225,22 +228,16 @@ static void nes_write_ppu(struct nes_t nes[static 1], u16 addr, u8 value)
         unreachable();
     }
 
-    if (addr < 0x4000) {
-        u16 pal_addr = (addr - 0x4000) % NES_PAL_RAM_SIZE;
+    u16 pal_addr = (addr - 0x4000) % NES_PAL_RAM_SIZE;
 
-        if ((pal_addr % 4) == 0) {
-            // entry 0s are shared between background and sprite palettes
-            // See https://www.nesdev.org/wiki/PPU_palettes#Palette_RAM
-            nes->pal_ram[pal_addr & 0x0F] = value;
-            nes->pal_ram[pal_addr | 0x10] = value;
-        } else {
-            nes->pal_ram[pal_addr] = value;
-        }
-
-        return;
+    if ((pal_addr % 4) == 0) {
+        // entry 0s are shared between background and sprite palettes
+        // See https://www.nesdev.org/wiki/PPU_palettes#Palette_RAM
+        nes->pal_ram[pal_addr & 0x0F] = value;
+        nes->pal_ram[pal_addr | 0x10] = value;
+    } else {
+        nes->pal_ram[pal_addr] = value;
     }
-
-    PANIC("ppu write to $%04X (value = $%02X)", addr, value);
 }
 
 static void nes_update_joy1(struct nes_t nes[static 1])
@@ -261,9 +258,9 @@ static u8 nes_read_mem(struct nes_t nes[static 1], u16 addr)
     if (addr < 0x4000) {
         switch ((addr - 0x2000) % 8) {
             case 0:
-                return nes->ppuctrl;
+                PANIC("read from $%04X (ppuctrl)", addr);
             case 1:
-                return nes->ppumask;
+                PANIC("read from $%04X (ppumask)", addr);
             case 2: {
                 u8 val = nes->ppustatus;
                 set_bits(&nes->ppustatus, PPUSTATUS_VBLANK, false);
@@ -276,7 +273,7 @@ static u8 nes_read_mem(struct nes_t nes[static 1], u16 addr)
                 return nes->oam[nes->oamaddr];
             case 5: // ppuscroll
                 PANIC("read from $%04X (ppuscroll)", addr);
-            case 6:
+            case 6: // ppuaddr
                 PANIC("read from $%04X (ppuaddr)", addr);
             case 7: {
                 // ppudata is delayed by a buffer
@@ -328,9 +325,9 @@ static u8 nes_peek_mem(const struct nes_t nes[static 1], u16 addr)
     if (addr < 0x4000) {
         switch ((addr - 0x2000) % 8) {
             case 0:
-                return nes->ppuctrl;
+                return 0xFF;
             case 1:
-                return nes->ppumask;
+                return 0xFF;
             case 2:
                 return nes->ppustatus;
             case 3: // oamaddr
@@ -339,7 +336,7 @@ static u8 nes_peek_mem(const struct nes_t nes[static 1], u16 addr)
                 return nes->oam[nes->oamaddr];
             case 5: // ppuscroll
                 return 0xFF;
-            case 6:
+            case 6: // ppuaddr
                 return 0xFF;
             case 7:
                 return nes->ppudata_buf;
@@ -383,7 +380,11 @@ static void nes_write_mem(struct nes_t nes[static 1], u16 addr, u8 value)
     if (addr < 0x4000) {
         switch ((addr - 0x2000) % 8) {
             case 0:
-                nes->ppuctrl = value;
+                // t: ...GH.. ........ <- d: ......GH
+                nes->t = (nes->t & ~(0b11 << 10)) | (((u16)value & 0b11) << 10);
+
+                //    <used elsewhere> <- d: ABCDEF..
+                nes->ppuctrl = value & ~0b11;
                 return;
             case 1:
                 nes->ppumask = value;
@@ -398,21 +399,47 @@ static void nes_write_mem(struct nes_t nes[static 1], u16 addr, u8 value)
                 nes->oam[nes->oamaddr++] = value;
                 return;
             case 5: // ppuscroll
-                if (nes->w == 0)
-                    nes->ppuscroll =
-                        (nes->ppuscroll & 0x00FF) | ((u16)value << 8);
-                else
-                    nes->ppuscroll = (nes->ppuscroll & 0xFF00) | value;
+                // https://www.nesdev.org/wiki/PPU_scrolling#Register_controls
+                if (nes->w == 0) {
+                    // t: ....... ...ABCDE <- d: ABCDE...
+                    nes->t = (nes->t & ~0b11111) | (value >> 3);
 
-                nes->w ^= 1;
+                    // x:              FGH <- d: .....FGH
+                    nes->x = value & 0b111;
+
+                    // w:                  <- 1
+                    nes->w = 1;
+                } else {
+                    // t: FGH..AB CDE..... <- d: ABCDEFGH
+                    nes->t =
+                        (nes->t & ~(0b11111 << 5)) | (((u16)value >> 3) << 5);
+                    nes->t = (nes->t & ~(0b111 << 12)) |
+                             (((u16)value & 0b111) << 12);
+
+                    // w:                  <- 0
+                    nes->w = 0;
+                }
                 return;
-            case 6:
-                if (nes->w == 0)
-                    nes->v = (nes->v & 0x00FF) | ((u16)value << 8);
-                else
-                    nes->v = (nes->v & 0xFF00) | value;
+            case 6: // ppuaddr
+                if (nes->w == 0) {
+                    // t: .CDEFGH ........ <- d: ..CDEFGH
+                    //        <unused>     <- d: AB......
+                    // t: Z...... ........ <- 0 (bit Z is cleared)
+                    nes->t = (nes->t & 0x00FF) | (((u16)value & 0x3F) << 8);
 
-                nes->w ^= 1;
+                    // w:                  <- 1
+                    nes->w = 1;
+                } else {
+                    // t: ....... ABCDEFGH <- d: ABCDEFGH
+                    nes->t = (nes->t & 0xFF00) | value;
+
+                    // w:                  <- 0
+                    nes->w = 0;
+
+                    //    (wait 1 to 1.5 dots after the write completes)
+                    // v: <...all bits...> <- t: <...all bits...>
+                    nes->v = nes->t; // TODO: delay this by 1-1.5 dots
+                }
                 return;
             case 7:
                 nes_write_ppu(nes, nes->v, value);
@@ -483,10 +510,6 @@ static void nes_write_mem(struct nes_t nes[static 1], u16 addr, u8 value)
     if (addr < 0x4020)
         return;
 
-    if (addr == 0x6000) {
-        printf("status: $%02X\n", value);
-    }
-
     assert(nes->mapper_init);
     mapper_write(nes->mapper, addr, value);
 }
@@ -504,9 +527,8 @@ struct nes_t *nes_init(struct nes_t *nes, FILE *log_file)
     if (vram == nullptr)
         goto err_cleanup_2;
 
-    scanout_buf_mut_t scanout_buf =
-        calloc(NES_SCREEN_HEIGHT, sizeof(scanout_buf[0]));
-    if (scanout_buf == nullptr)
+    frame_buf_mut_t frame_buf = calloc(NES_SCREEN_HEIGHT, sizeof(frame_buf[0]));
+    if (frame_buf == nullptr)
         goto err_cleanup_3;
 
     u8 *oam = calloc(OAM_SIZE, sizeof(oam[0]));
@@ -523,14 +545,14 @@ struct nes_t *nes_init(struct nes_t *nes, FILE *log_file)
     nes->ram = ram;
     nes->vram = vram;
     nes->oam = oam;
-    nes->scanout_buf = scanout_buf;
+    nes->frame_buf = frame_buf;
 
     return nes;
 
 err_cleanup_5:
     free(oam);
 err_cleanup_4:
-    free(scanout_buf);
+    free(frame_buf);
 err_cleanup_3:
     free(vram);
 err_cleanup_2:
@@ -553,7 +575,7 @@ void nes_deinit(struct nes_t *nes)
         mapper_deinit(nes->mapper);
 
     free(nes->oam);
-    free(nes->scanout_buf);
+    free(nes->frame_buf);
     free(nes->vram);
     free(nes->ram);
 
@@ -637,51 +659,9 @@ static constexpr size_t DOTS_Y = 262;
 static_assert(DOTS_X >= NES_SCREEN_WIDTH);
 static_assert(DOTS_Y >= NES_SCREEN_HEIGHT);
 
+static constexpr size_t LINE_POST_RENDER = NES_SCREEN_HEIGHT;
+static constexpr size_t LINE_VBLANK = LINE_POST_RENDER + 1;
 static constexpr size_t LINE_PRE_RENDER = DOTS_Y - 1;
-static constexpr size_t LINE_VBLANK = 241;
-
-static void nes_update_scanout_bg(struct nes_t nes[static 1], size_t nt_addr,
-                                  u8 col_mask)
-{
-    u16 pat_tbl_addr =
-        (nes->ppuctrl & PPUCTRL_BG_PAT_ADDR) == 0 ? 0x0000 : 0x1000;
-
-    for (size_t coarse_y = 0; coarse_y < 30; ++coarse_y) {
-        for (size_t coarse_x = 0; coarse_x < 32; ++coarse_x) {
-            size_t dst_x = 8 * coarse_x;
-            size_t dst_y = 8 * coarse_y;
-
-            u8 t_idx = nes_read_ppu(nes, nt_addr + (coarse_y * 32) + coarse_x);
-            u16 pat_base = pat_tbl_addr + (16ULL * t_idx);
-
-            size_t attr_idx = ((coarse_y << 1) & ~0b111) + (coarse_x >> 2);
-            u8 attr = nes_read_ppu(nes, nt_addr + 0x3C0 + attr_idx);
-
-            size_t attr_quad = (coarse_y & 0b10) + ((coarse_x >> 1) & 1);
-            u8 pal = (attr >> (2 * attr_quad)) & 0b11;
-
-            for (size_t py = 0; py < 8; ++py) {
-                u8 p0 = nes_read_ppu(nes, pat_base + py);
-                u8 p1 = nes_read_ppu(nes, pat_base + py + 8);
-
-                for (size_t px = 0; px < 8; ++px) {
-                    u8 b0 = p0 >> 7;
-                    u8 b1 = p1 >> 7;
-                    u8 entry = b0 | (b1 << 1);
-
-                    if (entry != 0) {
-                        u8 col = nes->pal_ram[(4 * pal) + entry];
-                        nes->scanout_buf[dst_y + py][dst_x + px] =
-                            col & col_mask;
-                    }
-
-                    p0 <<= 1;
-                    p1 <<= 1;
-                }
-            }
-        }
-    }
-}
 
 enum spr_attrs_t : u8 {
     ATTRS_PALETTE = 0b11,
@@ -705,7 +685,7 @@ static void nes_update_scanout_sprs(struct nes_t nes[static 1], u8 col_mask,
         if (y_pos == 0)
             continue;
 
-        u8 tile_idx = nes->oam[(4 * i) + 1];
+        u8 tile_id = nes->oam[(4 * i) + 1];
         u8 attrs = nes->oam[(4 * i) + 2];
         u8 x_pos = nes->oam[(4 * i) + 3];
 
@@ -719,7 +699,7 @@ static void nes_update_scanout_sprs(struct nes_t nes[static 1], u8 col_mask,
         bool flip_hor = (attrs & ATTRS_FLIP_HORIZONTAL) != 0;
         bool flip_ver = (attrs & ATTRS_FLIP_VERTICAL) != 0;
 
-        u16 pat_addr = pt_addr + (16ULL * tile_idx);
+        u16 pat_addr = pt_addr + (16ULL * tile_id);
 
         for (size_t py = 0; py < 8; ++py) {
             u8 p0 = nes_read_ppu(nes, pat_addr + py);
@@ -735,38 +715,15 @@ static void nes_update_scanout_sprs(struct nes_t nes[static 1], u8 col_mask,
 
                 if (entry != 0) {
                     u8 col = nes->pal_ram[(4 * (4 + pal)) + entry];
-                    nes->scanout_buf[y_pos + py_real][x_pos + px_real] =
+                    nes->frame_buf[y_pos + py_real][x_pos + px_real] =
                         col & col_mask;
                 }
 
-                p0 <<= 1;
-                p1 <<= 1;
+                p0 = (p0 << 1) | 1;
+                p1 = (p1 << 1) | 1;
             }
         }
     }
-}
-
-static void nes_update_scanout(struct nes_t nes[static 1])
-{
-    assert((nes->ppuctrl & PPUCTRL_SPR_SIZE) == 0 &&
-           "TODO: implement 8x16 sprites");
-
-    size_t nt_addr = 0x2000 + (0x400 * (nes->ppuctrl & PPUCTRL_BASE_NT_ADDR));
-
-    u8 col_mask = (nes->ppumask & PPUMASK_GREYSCALE) == 0 ? 0xFF : 0x30;
-
-    // entry 0 of palette 0 is used as backdrop color
-    memset(nes->scanout_buf, nes->pal_ram[0] & col_mask,
-           NES_SCREEN_HEIGHT * sizeof(nes->scanout_buf[0]));
-
-    if ((nes->ppumask & PPUMASK_SPR_EN) != 0)
-        nes_update_scanout_sprs(nes, col_mask, PRIORITY_HIGH);
-
-    if ((nes->ppumask & PPUMASK_BG_EN) != 0)
-        nes_update_scanout_bg(nes, nt_addr, col_mask);
-
-    if ((nes->ppumask & PPUMASK_SPR_EN) != 0)
-        nes_update_scanout_sprs(nes, col_mask, PRIORITY_LOW);
 }
 
 static void nes_log_trace(struct nes_t nes[static 1])
@@ -879,28 +836,173 @@ u64 nes_time_pixel(const struct nes_t *nes)
     return PPU_CLK_RATIO * nes->ppu_cyc;
 }
 
-void nes_dispatch_pixel(struct nes_t *nes)
+// Source: https://www.nesdev.org/wiki/PPU_scrolling#Wrapping_around
+static uint(15) coarse_x_increment(uint(15) v)
 {
-    if (++nes->px == DOTS_X) {
-        nes->px = 0;
-
-        if (++nes->py == DOTS_Y)
-            nes->py = 0;
+    if ((v & 0x001F) == 31) { // if coarse X == 31
+        v &= ~0x001F; // coarse X = 0
+        v ^= 0x0400; // switch horizontal nametable
+    } else {
+        v += 1; // increment coarse X
     }
 
-    if (nes->py == LINE_VBLANK && nes->px == 1) {
-        // vblank
+    return v;
+}
+
+// Source: https://www.nesdev.org/wiki/PPU_scrolling#Wrapping_around
+static uint(15) y_increment(uint(15) v)
+{
+    if ((v & 0x7000) != 0x7000) { // if fine Y < 7
+        v += 0x1000; // increment fine Y
+    } else {
+        v &= ~0x7000; // fine Y = 0
+        uint(15) y = (v & 0x03E0) >> 5; // let y = coarse Y
+        if (y == 29) {
+            y = 0; // coarse Y = 0
+            v ^= 0x0800; // switch vertical nametable
+        } else if (y == 31) {
+            y = 0; // coarse Y = 0, nametable not switched
+        } else {
+            y += 1; // increment coarse Y
+        }
+        v = (v & ~0x03E0) | (y << 5); // put coarse Y back into v
+    }
+
+    return v;
+}
+
+void nes_dispatch_pixel(struct nes_t *nes)
+{
+    assert((nes->ppuctrl & PPUCTRL_SPR_SIZE) == 0 &&
+           "TODO: implement 8x16 sprites");
+
+    bool ppu_enabled = (nes->ppumask & (PPUMASK_BG_EN | PPUMASK_SPR_EN)) != 0;
+
+    bool x_visible = nes->px > 0 && nes->px <= NES_SCREEN_WIDTH;
+
+    bool y_visible = nes->py < LINE_POST_RENDER;
+    bool y_vblank = nes->py == LINE_VBLANK;
+    bool y_pre_render = nes->py == LINE_PRE_RENDER;
+    bool y_visible_or_pre_render = y_visible || y_pre_render;
+
+    u8 col_mask = (nes->ppumask & PPUMASK_GREYSCALE) == 0 ? 0xFF : 0x30;
+
+    u8 coarse_x = nes->v & 0x1F;
+    u8 coarse_y = (nes->v >> 5) & 0x1F;
+    uint(3) fine_y = nes->v >> 12;
+
+    // if (nes->py == 0) {
+    //     printf("PPU %3zd,%3zd - v:%015B t:%015B en:%u\n", nes->py, nes->px,
+    //            (u16)nes->v, (u16)nes->t, ppu_enabled);
+    // }
+
+    bool reload_regs = false;
+    bool shift_regs = false;
+
+    if (ppu_enabled && y_visible_or_pre_render &&
+        (x_visible || (nes->px >= 321 && nes->px <= 336))) {
+        shift_regs = true;
+        u16 pat_base = (((u16)nes->ppuctrl & PPUCTRL_BG_PAT_ADDR) << 8) |
+                       ((u16)nes->tile_id_next << 4);
+
+        switch (nes->px % 8) {
+            case 2: { // fetch from nametable
+                u16 tile_addr = 0x2000 | (nes->v & 0x0FFF);
+                nes->tile_id_next = nes_read_ppu(nes, tile_addr);
+                break;
+            }
+            case 4: { // fetch from attribute table
+                u16 attr_addr = 0x23C0 | (nes->v & 0x0C00) |
+                                ((nes->v >> 4) & 0x38) | ((nes->v >> 2) & 0x07);
+
+                nes->attr_next = nes_read_ppu(nes, attr_addr);
+                break;
+            }
+            case 6: // fetch bg plane 0
+                nes->p0_next = nes_read_ppu(nes, pat_base + fine_y);
+                break;
+            case 0: // fetch bg plane 1
+                nes->p1_next = nes_read_ppu(nes, pat_base + fine_y + 8);
+
+                if (x_visible || nes->px >= 328) {
+                    nes->v = coarse_x_increment(nes->v);
+                    reload_regs = true;
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (ppu_enabled && y_visible_or_pre_render && nes->px == 256)
+        nes->v = y_increment(nes->v);
+
+    if (ppu_enabled && y_visible_or_pre_render && nes->px == 257) {
+        // v: ....A.. ...BCDEF <- t: ....A.. ...BCDEF
+        nes->v = (nes->v & ~0x041F) | (nes->t & 0x041F);
+    }
+
+    if (ppu_enabled && y_pre_render && nes->px >= 280 && nes->px <= 304) {
+        // v: GHIA.BC DEF..... <- t: GHIA.BC DEF.....
+        nes->v = (nes->v & ~0x7BE0) | (nes->t & 0x7BE0);
+    }
+
+    if (y_visible && x_visible) {
+        if (!ppu_enabled) {
+            nes->frame_buf[nes->py][nes->px - 1] = 0x1D;
+        } else {
+            u8 p_b0 = (nes->p0_reg >> (15 - nes->x)) & 1;
+            u8 p_b1 = (nes->p1_reg >> (15 - nes->x)) & 1;
+            u8 pal_b0 = (nes->pal0_reg >> (7 - nes->x)) & 1;
+            u8 pal_b1 = (nes->pal1_reg >> (7 - nes->x)) & 1;
+
+            u8 bg_col = p_b0 | (p_b1 << 1);
+            u8 pal = pal_b0 | (pal_b1 << 1);
+
+            u8 col = bg_col == 0 ? nes->pal_ram[0]
+                                 : nes->pal_ram[(4 * pal) + bg_col];
+
+            nes->frame_buf[nes->py][nes->px - 1] = col & col_mask;
+        }
+    }
+
+    if (shift_regs) {
+        nes->p0_reg = (nes->p0_reg << 1) | 1;
+        nes->p1_reg = (nes->p1_reg << 1) | 1;
+        nes->pal0_reg = (nes->pal0_reg << 1) | nes->pal0_latch;
+        nes->pal1_reg = (nes->pal1_reg << 1) | nes->pal1_latch;
+    }
+
+    if (reload_regs) {
+        nes->p0_reg = (nes->p0_reg & 0xFF00) | nes->p0_next;
+        nes->p1_reg = (nes->p1_reg & 0xFF00) | nes->p1_next;
+
+        size_t attr_quad = (coarse_y & 0b10) + ((coarse_x >> 1) & 1);
+        u8 pal_next = (nes->attr_next >> (2 * attr_quad)) & 0b11;
+        nes->pal0_latch = pal_next & 1;
+        nes->pal1_latch = (pal_next >> 1) & 1;
+    }
+
+    if (y_vblank && nes->px == 1) {
         set_bits(&nes->ppustatus, PPUSTATUS_VBLANK, true);
 
         if ((nes->ppuctrl & PPUCTRL_VBLANK_NMI_EN) != 0)
             cpu_request_nmi(&nes->cpu, nes_as_memory(nes));
     }
 
-    if (nes->py == LINE_PRE_RENDER && nes->px == 1) {
-        // pre-render
+    if (y_pre_render && nes->px == 1) {
         set_bits(&nes->ppustatus, PPUSTATUS_VBLANK, false);
-        nes_update_scanout(nes);
+        set_bits(&nes->ppustatus, PPUSTATUS_SPR0_HIT, false);
+        set_bits(&nes->ppustatus, PPUSTATUS_SPR_OF, false);
     }
+
+    // increment counters
+    if (++nes->px == DOTS_X) {
+        nes->px = 0;
+        if (++nes->py == DOTS_Y)
+            nes->py = 0;
+    }
+
     ++nes->ppu_cyc;
 }
 
@@ -935,7 +1037,7 @@ void nes_dispatch_dma_cycle(struct nes_t *nes)
     ++nes->dma_cyc;
 }
 
-nes_scanout_buf_t nes_get_scanout(const struct nes_t *nes)
+nes_frame_buf_t nes_get_frame_buf(const struct nes_t *nes)
 {
-    return nes->scanout_buf;
+    return nes->frame_buf;
 }

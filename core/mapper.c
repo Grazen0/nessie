@@ -88,7 +88,7 @@ static void nrom_mapper_write_v(void *ptr, [[maybe_unused]] u16 addr,
     [[maybe_unused]] struct nrom_mapper_t *mapper = ptr;
 }
 
-static struct mapper_ppu_read_t nrom_mapper_read_ppu_v(void *ptr, u16 addr)
+static struct mapper_ppu_read_t nrom_mapper_read_ppu_v(void *ptr, uint(14) addr)
 {
     struct nrom_mapper_t *mapper = ptr;
 
@@ -108,8 +108,8 @@ static struct mapper_ppu_read_t nrom_mapper_read_ppu_v(void *ptr, u16 addr)
     return result;
 }
 
-static struct mapper_ppu_write_t nrom_mapper_write_ppu_v(void *ptr, u16 addr,
-                                                         u8 value)
+static struct mapper_ppu_write_t
+nrom_mapper_write_ppu_v(void *ptr, uint(14) addr, u8 value)
 {
     [[maybe_unused]] struct nrom_mapper_t *mapper = ptr;
 

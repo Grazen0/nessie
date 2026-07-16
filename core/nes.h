@@ -31,7 +31,7 @@ enum nes_btn_t : u8 {
 
 struct nes_t;
 
-typedef const uint(6) (*nes_scanout_buf_t)[NES_SCREEN_WIDTH];
+typedef const uint(6) (*nes_frame_buf_t)[NES_SCREEN_WIDTH];
 
 struct nes_t *nes_init(struct nes_t *nes, FILE *log_file);
 
@@ -50,9 +50,9 @@ void nes_set_pc(struct nes_t *nes, u16 pc);
 
 void nes_set_btn(struct nes_t *nes, enum nes_btn_t btn, bool pressed);
 
-u8 nes_read_ppu(struct nes_t *nes, u16 addr);
+u8 nes_read_ppu(struct nes_t *nes, uint(14) addr);
 
-nes_scanout_buf_t nes_get_scanout(const struct nes_t *nes);
+nes_frame_buf_t nes_get_frame_buf(const struct nes_t *nes);
 
 u64 nes_time_cpu(const struct nes_t *nes);
 
