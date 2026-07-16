@@ -2,7 +2,6 @@
 #include "util.h"
 #include <assert.h>
 #include <stdckdint.h>
-#include <stdlib.h>
 
 static constexpr u16 NMI_LOC = 0xFFFA;
 static constexpr u16 RES_LOC = 0xFFFC;

@@ -94,8 +94,8 @@ struct nes_t {
 
     // ppu
     u64 ppu_cyc;
-    size_t px;
-    size_t py;
+    size_t hpos;
+    size_t vpos;
     u8 *vram;
     u8 *oam;
     frame_buf_mut_t frame_buf;
@@ -115,6 +115,13 @@ struct nes_t {
     u8 pal1_reg;
     uint(1) pal0_latch;
     uint(1) pal1_latch;
+    u8 oam_snd[32];
+    uint(1) frame_parity;
+    u8 sprs_p0[8];
+    u8 sprs_p1[8];
+    u8 sprs_x[8];
+    u8 sprs_attr[8];
+    u8 soam_idx;
 
     uint(15) v;
     uint(15) t;
@@ -675,57 +682,6 @@ enum spr_priority_t : u8 {
     PRIORITY_LOW,
 };
 
-static void nes_update_scanout_sprs(struct nes_t nes[static 1], u8 col_mask,
-                                    enum spr_priority_t priority)
-{
-    u16 pt_addr = (nes->ppuctrl & PPUCTRL_SPR_PAT_ADDR) == 0 ? 0x0000 : 0x1000;
-
-    for (size_t i = 0; i < 64; ++i) {
-        u8 y_pos = nes->oam[(4 * i)] + 1;
-        if (y_pos == 0)
-            continue;
-
-        u8 tile_id = nes->oam[(4 * i) + 1];
-        u8 attrs = nes->oam[(4 * i) + 2];
-        u8 x_pos = nes->oam[(4 * i) + 3];
-
-        enum spr_priority_t spr_priority =
-            (attrs & ATTRS_PRIORITY) == 0 ? PRIORITY_LOW : PRIORITY_HIGH;
-
-        if (spr_priority != priority)
-            continue;
-
-        u8 pal = attrs & ATTRS_PALETTE;
-        bool flip_hor = (attrs & ATTRS_FLIP_HORIZONTAL) != 0;
-        bool flip_ver = (attrs & ATTRS_FLIP_VERTICAL) != 0;
-
-        u16 pat_addr = pt_addr + (16ULL * tile_id);
-
-        for (size_t py = 0; py < 8; ++py) {
-            u8 p0 = nes_read_ppu(nes, pat_addr + py);
-            u8 p1 = nes_read_ppu(nes, pat_addr + py + 8);
-
-            for (size_t px = 0; px < 8; ++px) {
-                u8 entry_b0 = p0 >> 7;
-                u8 entry_b1 = p1 >> 7;
-                u8 entry = entry_b0 | (entry_b1 << 1);
-
-                size_t py_real = flip_ver ? (7 - py) : py;
-                size_t px_real = flip_hor ? (7 - px) : px;
-
-                if (entry != 0) {
-                    u8 col = nes->pal_ram[(4 * (4 + pal)) + entry];
-                    nes->frame_buf[y_pos + py_real][x_pos + px_real] =
-                        col & col_mask;
-                }
-
-                p0 = (p0 << 1) | 1;
-                p1 = (p1 << 1) | 1;
-            }
-        }
-    }
-}
-
 static void nes_log_trace(struct nes_t nes[static 1])
 {
     if (nes->log_file == nullptr)
@@ -802,7 +758,7 @@ static void nes_log_trace(struct nes_t nes[static 1])
     fprintf(nes->log_file,
             "%-*sA:%02X X:%02X Y:%02X P:%02X SP:%02X PPU:%3zd,%3zd CYC:%zu\n",
             (int)(sizeof(buf) - 1), buf, trace.a, trace.x, trace.y, trace.p,
-            trace.s, nes->py, nes->px, trace.cyc);
+            trace.s, nes->vpos, nes->hpos, trace.cyc);
     fflush(nes->log_file);
 }
 
@@ -878,34 +834,29 @@ void nes_dispatch_pixel(struct nes_t *nes)
 
     bool ppu_enabled = (nes->ppumask & (PPUMASK_BG_EN | PPUMASK_SPR_EN)) != 0;
 
-    bool x_visible = nes->px > 0 && nes->px <= NES_SCREEN_WIDTH;
+    bool hpos_visible = nes->hpos > 0 && nes->hpos <= NES_SCREEN_WIDTH;
 
-    bool y_visible = nes->py < LINE_POST_RENDER;
-    bool y_vblank = nes->py == LINE_VBLANK;
-    bool y_pre_render = nes->py == LINE_PRE_RENDER;
-    bool y_visible_or_pre_render = y_visible || y_pre_render;
+    bool vpos_visible = nes->vpos < LINE_POST_RENDER;
+    bool vpos_vblank = nes->vpos == LINE_VBLANK;
+    bool vpos_pre_render = nes->vpos == LINE_PRE_RENDER;
+    bool vpos_visible_or_pre_render = vpos_visible || vpos_pre_render;
 
     u8 col_mask = (nes->ppumask & PPUMASK_GREYSCALE) == 0 ? 0xFF : 0x30;
 
     u8 coarse_x = nes->v & 0x1F;
     u8 coarse_y = (nes->v >> 5) & 0x1F;
-    uint(3) fine_y = nes->v >> 12;
-
-    // if (nes->py == 0) {
-    //     printf("PPU %3zd,%3zd - v:%015B t:%015B en:%u\n", nes->py, nes->px,
-    //            (u16)nes->v, (u16)nes->t, ppu_enabled);
-    // }
+    u8 fine_y = (nes->v >> 12) & 0b111;
 
     bool reload_regs = false;
     bool shift_regs = false;
 
-    if (ppu_enabled && y_visible_or_pre_render &&
-        (x_visible || (nes->px >= 321 && nes->px <= 336))) {
+    if (ppu_enabled && vpos_visible_or_pre_render &&
+        (hpos_visible || (nes->hpos >= 321 && nes->hpos <= 336))) {
         shift_regs = true;
         u16 pat_base = (((u16)nes->ppuctrl & PPUCTRL_BG_PAT_ADDR) << 8) |
                        ((u16)nes->tile_id_next << 4);
 
-        switch (nes->px % 8) {
+        switch (nes->hpos % 8) {
             case 2: { // fetch from nametable
                 u16 tile_addr = 0x2000 | (nes->v & 0x0FFF);
                 nes->tile_id_next = nes_read_ppu(nes, tile_addr);
@@ -924,7 +875,7 @@ void nes_dispatch_pixel(struct nes_t *nes)
             case 0: // fetch bg plane 1
                 nes->p1_next = nes_read_ppu(nes, pat_base + fine_y + 8);
 
-                if (x_visible || nes->px >= 328) {
+                if (hpos_visible || nes->hpos >= 328) {
                     nes->v = coarse_x_increment(nes->v);
                     reload_regs = true;
                 }
@@ -934,35 +885,76 @@ void nes_dispatch_pixel(struct nes_t *nes)
         }
     }
 
-    if (ppu_enabled && y_visible_or_pre_render && nes->px == 256)
+    if (ppu_enabled && vpos_visible_or_pre_render && nes->hpos == 256)
         nes->v = y_increment(nes->v);
 
-    if (ppu_enabled && y_visible_or_pre_render && nes->px == 257) {
+    if (ppu_enabled && vpos_visible_or_pre_render && nes->hpos == 257) {
         // v: ....A.. ...BCDEF <- t: ....A.. ...BCDEF
         nes->v = (nes->v & ~0x041F) | (nes->t & 0x041F);
     }
 
-    if (ppu_enabled && y_pre_render && nes->px >= 280 && nes->px <= 304) {
+    if (ppu_enabled && vpos_pre_render && nes->hpos >= 280 &&
+        nes->hpos <= 304) {
         // v: GHIA.BC DEF..... <- t: GHIA.BC DEF.....
         nes->v = (nes->v & ~0x7BE0) | (nes->t & 0x7BE0);
     }
 
-    if (y_visible && x_visible) {
+    if (vpos_visible && hpos_visible) {
         if (!ppu_enabled) {
-            nes->frame_buf[nes->py][nes->px - 1] = 0x1D;
+            nes->frame_buf[nes->vpos][nes->hpos - 1] = 0x1D;
         } else {
             u8 p_b0 = (nes->p0_reg >> (15 - nes->x)) & 1;
             u8 p_b1 = (nes->p1_reg >> (15 - nes->x)) & 1;
             u8 pal_b0 = (nes->pal0_reg >> (7 - nes->x)) & 1;
             u8 pal_b1 = (nes->pal1_reg >> (7 - nes->x)) & 1;
 
-            u8 bg_col = p_b0 | (p_b1 << 1);
-            u8 pal = pal_b0 | (pal_b1 << 1);
+            u8 bg_pixel = p_b0 | (p_b1 << 1);
+            u8 bg_pal = pal_b0 | (pal_b1 << 1);
 
-            u8 col = bg_col == 0 ? nes->pal_ram[0]
-                                 : nes->pal_ram[(4 * pal) + bg_col];
+            u8 spr_pixel = 0;
+            u8 spr_attr = 0;
+            u8 spr_idx = 0;
 
-            nes->frame_buf[nes->py][nes->px - 1] = col & col_mask;
+            for (size_t i = 0; i < 8; ++i) {
+                u8 x_pos = nes->sprs_x[i];
+                u8 attr = nes->sprs_attr[i];
+
+                if (nes->hpos - 1 >= x_pos &&
+                    nes->hpos - 1 < (size_t)x_pos + 8) {
+                    u8 rel_pos = nes->hpos - 1 - (size_t)x_pos;
+
+                    u8 b0 = (nes->sprs_p0[i] >> (7 - rel_pos)) & 1;
+                    u8 b1 = (nes->sprs_p1[i] >> (7 - rel_pos)) & 1;
+                    u8 pixel = b0 | (b1 << 1);
+
+                    if (pixel != 0) {
+                        spr_idx = 0;
+                        spr_pixel = pixel;
+                        spr_attr = attr;
+                        break;
+                    }
+                }
+            }
+
+            u8 col = 0;
+
+            if (spr_idx == 0 && bg_pixel != 0 && spr_pixel != 0)
+                set_bits(&nes->ppustatus, PPUSTATUS_SPR0_HIT, true);
+
+            if (bg_pixel == 0 && spr_pixel == 0) {
+                // ext
+                col = nes->pal_ram[0];
+            } else if (bg_pixel != 0 &&
+                       (spr_pixel == 0 || (spr_attr & ATTRS_PRIORITY) != 0)) {
+                // bg
+                col = nes->pal_ram[(bg_pal << 2) | bg_pixel];
+            } else {
+                // sprite
+                u8 spr_pal = spr_attr & ATTRS_PALETTE;
+                col = nes->pal_ram[0x10 | (spr_pal << 2) | spr_pixel];
+            }
+
+            nes->frame_buf[nes->vpos][nes->hpos - 1] = col & col_mask;
         }
     }
 
@@ -983,24 +975,105 @@ void nes_dispatch_pixel(struct nes_t *nes)
         nes->pal1_latch = (pal_next >> 1) & 1;
     }
 
-    if (y_vblank && nes->px == 1) {
+    // sprite evaluation =======================================================
+
+    if (ppu_enabled && nes->hpos >= 1) {
+        if (nes->hpos <= 64) {
+            // clear secondary oam
+            if ((nes->hpos % 2) == 0)
+                nes->oam_snd[(nes->hpos / 2) - 1] = 0xFF;
+        } else if (nes->hpos <= 256) {
+            // sprite evaluation
+            // TODO: do timing
+
+            nes->soam_idx = 0;
+
+            for (size_t i = 0; i < 256 && nes->soam_idx < 32; i += 4) {
+                u8 y = nes->oam[i];
+                nes->oam_snd[nes->soam_idx] = y;
+
+                if (y <= nes->vpos && nes->vpos < (size_t)y + 8) {
+                    nes->oam_snd[++nes->soam_idx] = nes->oam[i + 1];
+                    nes->oam_snd[++nes->soam_idx] = nes->oam[i + 2];
+                    nes->oam_snd[++nes->soam_idx] = nes->oam[i + 3];
+                    ++nes->soam_idx;
+                }
+            }
+
+            nes->soam_idx = 0;
+        } else if (nes->hpos <= 320) {
+            // sprite pattern fetches
+            u8 *spr_data = &nes->oam_snd[4UL * nes->soam_idx];
+            u8 y_pos = spr_data[0];
+            u8 tile_id = spr_data[1];
+            u8 attr = spr_data[2];
+            u8 x_pos = spr_data[3];
+
+            bool flip_hor = (attr & ATTRS_FLIP_HORIZONTAL) != 0;
+            bool flip_ver = (attr & ATTRS_FLIP_VERTICAL) != 0;
+
+            u16 pat_base = (((u16)nes->ppuctrl & PPUCTRL_SPR_PAT_ADDR) << 8) |
+                           ((u16)tile_id << 4);
+
+            u8 rel_y = nes->vpos - y_pos;
+            u8 rel_y_real = flip_ver ? (7 - rel_y) : rel_y;
+
+            if ((nes->hpos % 8) == 6) {
+                // fetch plane 0
+                nes->sprs_x[nes->soam_idx] = x_pos;
+                nes->sprs_attr[nes->soam_idx] = attr;
+                nes->sprs_p0[nes->soam_idx] =
+                    nes_read_ppu(nes, pat_base + rel_y_real);
+
+                if (flip_hor) {
+                    nes->sprs_p0[nes->soam_idx] =
+                        reverse_bits(nes->sprs_p0[nes->soam_idx]);
+                }
+
+            } else if ((nes->hpos % 8) == 0) {
+                // fetch plane 1
+                nes->sprs_p1[nes->soam_idx] =
+                    nes_read_ppu(nes, pat_base + rel_y_real + 8);
+
+                if (flip_hor) {
+                    nes->sprs_p1[nes->soam_idx] =
+                        reverse_bits(nes->sprs_p1[nes->soam_idx]);
+                }
+
+                ++nes->soam_idx;
+            }
+        }
+    }
+
+    if (vpos_vblank && nes->hpos == 1) {
         set_bits(&nes->ppustatus, PPUSTATUS_VBLANK, true);
 
         if ((nes->ppuctrl & PPUCTRL_VBLANK_NMI_EN) != 0)
             cpu_request_nmi(&nes->cpu, nes_as_memory(nes));
     }
 
-    if (y_pre_render && nes->px == 1) {
+    if (vpos_pre_render && nes->hpos == 1) {
         set_bits(&nes->ppustatus, PPUSTATUS_VBLANK, false);
         set_bits(&nes->ppustatus, PPUSTATUS_SPR0_HIT, false);
         set_bits(&nes->ppustatus, PPUSTATUS_SPR_OF, false);
     }
 
     // increment counters
-    if (++nes->px == DOTS_X) {
-        nes->px = 0;
-        if (++nes->py == DOTS_Y)
-            nes->py = 0;
+    if (++nes->hpos == DOTS_X) {
+        nes->hpos = 0;
+
+        if (++nes->vpos == DOTS_Y) {
+            nes->frame_parity ^= 1;
+            nes->vpos = 0;
+        }
+    }
+
+    // skip last dot on odd frames
+    if (nes->vpos == DOTS_Y - 1 && nes->hpos == DOTS_X - 1 &&
+        nes->frame_parity == 1) {
+        nes->frame_parity ^= 1;
+        nes->vpos = 0;
+        nes->hpos = 0;
     }
 
     ++nes->ppu_cyc;

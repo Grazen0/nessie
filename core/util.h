@@ -45,4 +45,13 @@ static inline void set_bits(u8 num[static 1], u8 mask, bool value)
         *num &= ~mask;
 }
 
+// Credit: https://stackoverflow.com/a/2602885/14766637
+static inline u8 reverse_bits(u8 b)
+{
+    b = (b & 0xF0) >> 4 | (b & 0x0F) << 4;
+    b = (b & 0xCC) >> 2 | (b & 0x33) << 2;
+    b = (b & 0xAA) >> 1 | (b & 0x55) << 1;
+    return b;
+}
+
 #endif
