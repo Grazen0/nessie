@@ -9,8 +9,8 @@
 
 struct mapper_ppu_read_t {
     enum {
-        MAPPER_READ_DIRECT,
-        MAPPER_READ_VRAM,
+        MAPPER_PPU_READ_DIRECT,
+        MAPPER_PPU_READ_VRAM,
     } kind;
     union {
         u8 direct_value;
@@ -20,8 +20,8 @@ struct mapper_ppu_read_t {
 
 struct mapper_ppu_write_t {
     enum {
-        MAPPER_WRITE_DONE,
-        MAPPER_WRITE_VRAM,
+        MAPPER_PPU_WRITE_DONE,
+        MAPPER_PPU_WRITE_VRAM,
     } kind;
     union {
         struct {

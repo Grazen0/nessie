@@ -206,9 +206,9 @@ u8 nes_read_ppu(struct nes_t *nes, uint(14) addr)
         auto result = mapper_read_ppu(nes->mapper, addr);
 
         switch (result.kind) {
-            case MAPPER_READ_DIRECT:
+            case MAPPER_PPU_READ_DIRECT:
                 return result.direct_value;
-            case MAPPER_READ_VRAM:
+            case MAPPER_PPU_READ_VRAM:
                 assert(result.vram_addr < VRAM_SIZE);
                 return nes->vram[result.vram_addr];
         }
@@ -227,9 +227,9 @@ static void nes_write_ppu(struct nes_t nes[static 1], uint(14) addr, u8 value)
         auto result = mapper_write_ppu(nes->mapper, addr, value);
 
         switch (result.kind) {
-            case MAPPER_WRITE_DONE:
+            case MAPPER_PPU_WRITE_DONE:
                 return;
-            case MAPPER_WRITE_VRAM:
+            case MAPPER_PPU_WRITE_VRAM:
                 nes->vram[result.vram.addr] = result.vram.value;
                 return;
         }
@@ -921,7 +921,7 @@ void nes_dispatch_pixel(struct nes_t *nes)
                 u8 x_pos = nes->sprs_x[i];
                 u8 attr = nes->sprs_attr[i];
 
-                if (nes->hpos - 1 >= x_pos && nes->hpos - 1 < x_pos + 8) {
+                if (nes->hpos - 1 >= x_pos && (u8)nes->hpos - 1 < x_pos + 8) {
                     u8 rel_pos = nes->hpos - 1 - (size_t)x_pos;
 
                     u8 b0 = (nes->sprs_p0[i] >> (7 - rel_pos)) & 1;

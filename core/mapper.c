@@ -9,7 +9,7 @@
 static inline struct mapper_ppu_read_t ppu_read_direct(u8 value)
 {
     return (struct mapper_ppu_read_t){
-        .kind = MAPPER_READ_DIRECT,
+        .kind = MAPPER_PPU_READ_DIRECT,
         .direct_value = value,
     };
 }
@@ -17,19 +17,19 @@ static inline struct mapper_ppu_read_t ppu_read_direct(u8 value)
 static inline struct mapper_ppu_read_t ppu_read_vram(u16 vram_addr)
 {
     return (struct mapper_ppu_read_t){
-        .kind = MAPPER_READ_VRAM,
+        .kind = MAPPER_PPU_READ_VRAM,
         .vram_addr = vram_addr,
     };
 }
 
 static struct mapper_ppu_write_t ppu_write_done = {
-    .kind = MAPPER_WRITE_DONE,
+    .kind = MAPPER_PPU_WRITE_DONE,
 };
 
 static inline struct mapper_ppu_write_t ppu_write_vram(u16 addr, u8 value)
 {
     return (struct mapper_ppu_write_t){
-        .kind = MAPPER_WRITE_VRAM,
+        .kind = MAPPER_PPU_WRITE_VRAM,
         .vram = {.addr = addr, .value = value},
     };
 }
