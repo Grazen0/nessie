@@ -8,13 +8,19 @@
 static constexpr size_t INES_PRG_BANK_LEN = 0x4000;
 static constexpr size_t INES_CHR_BANK_LEN = 0x2000;
 
+enum ines_nt_arrangement : bool {
+    INES_NT_ARR_VERTICAL,
+    INES_NT_ARR_HORIZONTAL,
+};
+
 struct ines_t {
     struct span_t prg_rom;
-    struct span_t chr_rom;
+    struct span_t chr;
     struct span_t trainer;
     u8 prg_banks;
     u8 chr_banks;
     u8 mapper_num;
+    enum ines_nt_arrangement nt_arrangement;
 };
 
 // contains data borrowed from rom

@@ -545,10 +545,10 @@ int main(int argc, char *argv[static argc + 1])
     }
 
     size_t prg_rom_banks = rom[4];
-    size_t chr_rom_banks = rom[5];
+    size_t chr_banks = rom[5];
 
     printf("PRG ROM size (banks): %zu\n", prg_rom_banks);
-    printf("CHR ROM size (banks): %zu\n", chr_rom_banks);
+    printf("CHR ROM size (banks): %zu\n", chr_banks);
     printf("\n");
 
     static constexpr size_t BANK_SIZE = 0x4000;

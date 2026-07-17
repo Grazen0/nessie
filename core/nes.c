@@ -122,6 +122,7 @@ struct nes_t {
     u8 sprs_x[8];
     u8 sprs_attr[8];
     u8 soam_idx;
+    bool loaded_spr0;
 
     uint(15) v;
     uint(15) t;
@@ -208,6 +209,7 @@ u8 nes_read_ppu(struct nes_t *nes, uint(14) addr)
             case MAPPER_READ_DIRECT:
                 return result.direct_value;
             case MAPPER_READ_VRAM:
+                assert(result.vram_addr < VRAM_SIZE);
                 return nes->vram[result.vram_addr];
         }
 
@@ -267,7 +269,7 @@ static u8 nes_read_mem(struct nes_t nes[static 1], u16 addr)
             case 0:
                 PANIC("read from $%04X (ppuctrl)", addr);
             case 1:
-                PANIC("read from $%04X (ppumask)", addr);
+                return 0xFF;
             case 2: {
                 u8 val = nes->ppustatus;
                 set_bits(&nes->ppustatus, PPUSTATUS_VBLANK, false);
@@ -911,16 +913,15 @@ void nes_dispatch_pixel(struct nes_t *nes)
             u8 bg_pixel = p_b0 | (p_b1 << 1);
             u8 bg_pal = pal_b0 | (pal_b1 << 1);
 
+            u8 spr_idx = 0xFF;
             u8 spr_pixel = 0;
             u8 spr_attr = 0;
-            u8 spr_idx = 0;
 
             for (size_t i = 0; i < 8; ++i) {
                 u8 x_pos = nes->sprs_x[i];
                 u8 attr = nes->sprs_attr[i];
 
-                if (nes->hpos - 1 >= x_pos &&
-                    nes->hpos - 1 < (size_t)x_pos + 8) {
+                if (nes->hpos - 1 >= x_pos && nes->hpos - 1 < x_pos + 8) {
                     u8 rel_pos = nes->hpos - 1 - (size_t)x_pos;
 
                     u8 b0 = (nes->sprs_p0[i] >> (7 - rel_pos)) & 1;
@@ -928,7 +929,7 @@ void nes_dispatch_pixel(struct nes_t *nes)
                     u8 pixel = b0 | (b1 << 1);
 
                     if (pixel != 0) {
-                        spr_idx = 0;
+                        spr_idx = i;
                         spr_pixel = pixel;
                         spr_attr = attr;
                         break;
@@ -938,8 +939,9 @@ void nes_dispatch_pixel(struct nes_t *nes)
 
             u8 col = 0;
 
-            if (spr_idx == 0 && bg_pixel != 0 && spr_pixel != 0)
-                set_bits(&nes->ppustatus, PPUSTATUS_SPR0_HIT, true);
+            if (nes->loaded_spr0 && spr_idx == 0 && bg_pixel != 0 &&
+                spr_pixel != 0)
+                nes->ppustatus |= PPUSTATUS_SPR0_HIT;
 
             if (bg_pixel == 0 && spr_pixel == 0) {
                 // ext
@@ -987,12 +989,16 @@ void nes_dispatch_pixel(struct nes_t *nes)
             // TODO: do timing
 
             nes->soam_idx = 0;
+            nes->loaded_spr0 = false;
 
             for (size_t i = 0; i < 256 && nes->soam_idx < 32; i += 4) {
                 u8 y = nes->oam[i];
                 nes->oam_snd[nes->soam_idx] = y;
 
                 if (y <= nes->vpos && nes->vpos < (size_t)y + 8) {
+                    if (nes->soam_idx == 0)
+                        nes->loaded_spr0 = true;
+
                     nes->oam_snd[++nes->soam_idx] = nes->oam[i + 1];
                     nes->oam_snd[++nes->soam_idx] = nes->oam[i + 2];
                     nes->oam_snd[++nes->soam_idx] = nes->oam[i + 3];
@@ -1046,16 +1052,15 @@ void nes_dispatch_pixel(struct nes_t *nes)
     }
 
     if (vpos_vblank && nes->hpos == 1) {
-        set_bits(&nes->ppustatus, PPUSTATUS_VBLANK, true);
+        nes->ppustatus |= PPUSTATUS_VBLANK;
 
         if ((nes->ppuctrl & PPUCTRL_VBLANK_NMI_EN) != 0)
             cpu_request_nmi(&nes->cpu, nes_as_memory(nes));
     }
 
     if (vpos_pre_render && nes->hpos == 1) {
-        set_bits(&nes->ppustatus, PPUSTATUS_VBLANK, false);
-        set_bits(&nes->ppustatus, PPUSTATUS_SPR0_HIT, false);
-        set_bits(&nes->ppustatus, PPUSTATUS_SPR_OF, false);
+        nes->ppustatus &=
+            ~(PPUSTATUS_VBLANK | PPUSTATUS_SPR0_HIT | PPUSTATUS_SPR_OF);
     }
 
     // increment counters

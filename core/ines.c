@@ -57,19 +57,22 @@ enum nes_error_t ines_parse(size_t rom_len, const u8 rom_data[static rom_len],
     }
 
     struct span_t prg_rom = {};
-    struct span_t chr_rom = {};
+    struct span_t chr = {};
 
     NES_TRY(span_take(&reader, INES_PRG_BANK_LEN * prg_banks, &prg_rom));
-    NES_TRY(span_take(&reader, INES_CHR_BANK_LEN * chr_banks, &chr_rom));
+    NES_TRY(span_take(&reader, INES_CHR_BANK_LEN * chr_banks, &chr));
 
     if (out_ines != nullptr) {
         *out_ines = (struct ines_t){
             .prg_rom = prg_rom,
-            .chr_rom = chr_rom,
+            .chr = chr,
             .trainer = trainer,
             .prg_banks = prg_banks,
             .chr_banks = chr_banks,
             .mapper_num = (flags_7 & 0xF0) | ((flags_6 >> 4) & 0x0F),
+            .nt_arrangement = (flags_6 & F6_NT_ARRANGEMENT) == 0
+                                  ? INES_NT_ARR_VERTICAL
+                                  : INES_NT_ARR_HORIZONTAL,
         };
     }
     return NES_OK;
