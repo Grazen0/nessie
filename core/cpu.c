@@ -313,20 +313,38 @@ static void cpu_instr_adc(struct cpu_t cpu[static 1], struct memory_t mem,
     struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
     u8 rhs = cpu_read_operand(cpu, mem, op);
 
-    i8 a_signed = (i8)cpu->a;
+    u8 cin = (cpu->p & FLAG_C) != 0 ? 1 : 0;
+    u8 cin_7 = (((u16)cpu->a & 0x7F) + (rhs & 0x7F) + cin) >> 7;
 
-    bool carry = ckd_add(&cpu->a, cpu->a, rhs);
-    bool overflow = ckd_add(&a_signed, a_signed, (i8)rhs);
-
-    if ((cpu->p & FLAG_C) != 0) {
-        carry = ckd_add(&cpu->a, cpu->a, 1) || carry;
-        overflow = ckd_add(&a_signed, a_signed, 1) || overflow;
-    }
+    u16 result = (u16)cpu->a + rhs + cin;
+    u8 cout = result >> 8;
+    cpu->a = result;
 
     set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
     set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
-    set_bits(&cpu->p, FLAG_C, carry);
-    set_bits(&cpu->p, FLAG_V, overflow);
+    set_bits(&cpu->p, FLAG_C, cout != 0);
+    set_bits(&cpu->p, FLAG_V, (cout ^ cin_7) != 0);
+}
+
+static void cpu_instr_sbc(struct cpu_t cpu[static 1], struct memory_t mem,
+                          enum cpu_op_kind_t op_kind)
+{
+    cpu->trace.instr.mnemonic = "SBC";
+
+    struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
+    u8 rhs = ~cpu_read_operand(cpu, mem, op);
+
+    u8 cin = (cpu->p & FLAG_C) != 0 ? 1 : 0;
+    u8 cin_7 = (((u16)cpu->a & 0x7F) + (rhs & 0x7F) + cin) >> 7;
+
+    u16 result = (u16)cpu->a + rhs + cin;
+    u8 cout = result >> 8;
+    cpu->a = result;
+
+    set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
+    set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
+    set_bits(&cpu->p, FLAG_C, cout != 0);
+    set_bits(&cpu->p, FLAG_V, (cout ^ cin_7) != 0);
 }
 
 static void cpu_instr_sta(struct cpu_t cpu[static 1], struct memory_t mem,
@@ -398,30 +416,6 @@ static void cpu_instr_cpy(struct cpu_t cpu[static 1], struct memory_t mem,
     set_bits(&cpu->p, FLAG_C, !borrow);
 }
 
-static void cpu_instr_sbc(struct cpu_t cpu[static 1], struct memory_t mem,
-                          enum cpu_op_kind_t op_kind)
-{
-    cpu->trace.instr.mnemonic = "SBC";
-
-    struct operand_t op = cpu_compute_operand(cpu, mem, op_kind, false);
-    u8 rhs = cpu_read_operand(cpu, mem, op);
-
-    i8 a_signed = (i8)cpu->a;
-
-    bool borrow = ckd_sub(&cpu->a, cpu->a, rhs);
-    bool overflow = ckd_sub(&a_signed, a_signed, (i8)rhs);
-
-    if ((cpu->p & FLAG_C) == 0) {
-        borrow = ckd_sub(&cpu->a, cpu->a, 1) || borrow;
-        overflow = ckd_sub(&a_signed, a_signed, 1) || overflow;
-    }
-
-    set_bits(&cpu->p, FLAG_N, (cpu->a & 0x80) != 0);
-    set_bits(&cpu->p, FLAG_Z, cpu->a == 0);
-    set_bits(&cpu->p, FLAG_C, !borrow);
-    set_bits(&cpu->p, FLAG_V, overflow);
-}
-
 static void cpu_instr_asl(struct cpu_t cpu[static 1], struct memory_t mem,
                           enum cpu_op_kind_t op_kind)
 {
@@ -453,7 +447,7 @@ static void cpu_instr_lsr(struct cpu_t cpu[static 1], struct memory_t mem,
 
     cpu_write_operand(cpu, mem, op, val_new);
 
-    set_bits(&cpu->p, FLAG_N, false);
+    cpu->p &= ~FLAG_N;
     set_bits(&cpu->p, FLAG_Z, val_new == 0);
     set_bits(&cpu->p, FLAG_C, (val & 1) != 0);
 }
@@ -1246,7 +1240,7 @@ bool cpu_request_irq(struct cpu_t cpu[static 1], struct memory_t mem)
     cpu_st_push(cpu, mem, (cpu->p & ~FLAG_B));
 
     cpu->pc = cpu_read_mem_u16(cpu, mem, IRQ_LOC);
-    set_bits(&cpu->p, FLAG_I, true);
+    cpu->p |= FLAG_I;
 
     ++cpu->cyc;
     return true;
@@ -1258,7 +1252,7 @@ void cpu_request_nmi(struct cpu_t cpu[static 1], struct memory_t mem)
     cpu_st_push(cpu, mem, (cpu->p & ~FLAG_B));
 
     cpu->pc = cpu_read_mem_u16(cpu, mem, NMI_LOC);
-    set_bits(&cpu->p, FLAG_I, true);
+    cpu->p |= FLAG_I;
 
     ++cpu->cyc;
 }
