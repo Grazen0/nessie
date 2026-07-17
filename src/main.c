@@ -3,7 +3,6 @@
 #include "nes.h"
 #include "scheduler.h"
 #include "util.h"
-#include <assert.h>
 #include <getopt.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -148,7 +147,7 @@ int main(int argc, char *argv[static argc + 1])
     }
 
     struct sched_t *sched = sched_create(nes);
-    assert(sched != nullptr);
+    ASSERT(sched != nullptr);
 
     printf("Using frontend '%s'\n", frontend.name);
     printf("\n");

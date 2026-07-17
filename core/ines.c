@@ -17,8 +17,8 @@ enum flags6_t {
     F6_ALT_NT = 1 << 3,
 };
 
-enum nes_error_t span_take(struct span_t span[static 1], size_t size,
-                           struct span_t *out_span)
+enum nes_error_t span_take(struct view_t span[static 1], size_t size,
+                           struct view_t *out_span)
 {
     if (span->len < size)
         return NES_ERR_TRUNCATED_ROM;
@@ -36,9 +36,9 @@ enum nes_error_t span_take(struct span_t span[static 1], size_t size,
 enum nes_error_t ines_parse(size_t rom_len, const u8 rom_data[static rom_len],
                             struct ines_t *out_ines)
 {
-    struct span_t reader = {rom_data, rom_len};
+    struct view_t reader = {rom_data, rom_len};
 
-    struct span_t header = {};
+    struct view_t header = {};
     NES_TRY(span_take(&reader, INES_HEADER_LEN, &header));
 
     if (memcmp(header.ptr, INES_MAGIC, ARRAY_LEN(INES_MAGIC)) != 0)
@@ -49,15 +49,15 @@ enum nes_error_t ines_parse(size_t rom_len, const u8 rom_data[static rom_len],
     u8 flags_6 = header.ptr[6];
     u8 flags_7 = header.ptr[7];
 
-    struct span_t trainer = {};
+    struct view_t trainer = {};
 
     if ((flags_6 & F6_TRAINER) != 0) {
         static constexpr size_t TRAINER_LEN = 512;
         NES_TRY(span_take(&reader, TRAINER_LEN, &trainer));
     }
 
-    struct span_t prg_rom = {};
-    struct span_t chr = {};
+    struct view_t prg_rom = {};
+    struct view_t chr = {};
 
     NES_TRY(span_take(&reader, INES_PRG_BANK_LEN * prg_banks, &prg_rom));
     NES_TRY(span_take(&reader, INES_CHR_BANK_LEN * chr_banks, &chr));

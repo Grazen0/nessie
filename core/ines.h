@@ -14,9 +14,9 @@ enum ines_nt_arrangement : bool {
 };
 
 struct ines_t {
-    struct span_t prg_rom;
-    struct span_t chr;
-    struct span_t trainer;
+    struct view_t prg_rom;
+    struct view_t chr;
+    struct view_t trainer;
     u8 prg_banks;
     u8 chr_banks;
     u8 mapper_num;

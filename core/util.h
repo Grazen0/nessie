@@ -18,6 +18,10 @@
         abort();                                                            \
     } while (0)
 
+#define ASSERT(COND, ...) \
+    if (!(COND))          \
+    PANIC(__VA_ARGS__)
+
 #define uint(n) unsigned _BitInt(n)
 
 typedef uint64_t u64;
@@ -30,12 +34,25 @@ typedef int32_t i32;
 typedef int16_t i16;
 typedef int8_t i8;
 
-struct span_t {
+void *memdup(const void *src, size_t n);
+
+struct view_t {
     const u8 *ptr;
     size_t len;
 };
 
-void *memdup(const void *src, size_t n);
+struct span_t {
+    u8 *ptr;
+    size_t len;
+};
+
+[[nodiscard]] struct span_t span_alloc(size_t len);
+
+[[nodiscard]] struct span_t span_alloc_uninit(size_t len);
+
+[[nodiscard]] struct span_t span_dup(struct view_t view);
+
+void span_deinit(struct span_t *span);
 
 static inline void set_bits(u8 num[static 1], u8 mask, bool value)
 {

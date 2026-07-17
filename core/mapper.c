@@ -35,10 +35,8 @@ static inline struct mapper_ppu_write_t ppu_write_vram(u16 addr, u8 value)
 }
 
 struct nrom_mapper_t {
-    u8 *prg_rom;
-    size_t prg_rom_len;
-    u8 *chr;
-    size_t chr_len;
+    struct span_t prg_rom;
+    struct span_t chr;
     enum ines_nt_arrangement nt_arrangement;
 };
 
@@ -49,26 +47,14 @@ nrom_mapper_init(struct nrom_mapper_t *mapper,
     if (mapper == nullptr)
         return nullptr;
 
-    u8 *prg_rom = memdup(ines->prg_rom.ptr, ines->prg_rom.len);
-    if (prg_rom == nullptr)
-        goto err_cleanup_1;
-
-    u8 *chr = memdup(ines->chr.ptr, ines->chr.len);
-    if (chr == nullptr)
-        goto err_cleanup_2;
+    auto prg_rom = span_dup(ines->prg_rom);
+    auto chr = span_dup(ines->chr);
 
     mapper->prg_rom = prg_rom;
-    mapper->prg_rom_len = ines->prg_rom.len;
     mapper->chr = chr;
-    mapper->chr_len = ines->chr.len;
     mapper->nt_arrangement = ines->nt_arrangement;
 
     return mapper;
-
-err_cleanup_2:
-    free(prg_rom);
-err_cleanup_1:
-    return nullptr;
 }
 
 [[nodiscard]] static struct nrom_mapper_t *
@@ -81,8 +67,8 @@ static void nrom_mapper_deinit_v(void *ptr)
 {
     struct nrom_mapper_t *mapper = ptr;
 
-    free(mapper->prg_rom);
-    free(mapper->chr);
+    span_deinit(&mapper->prg_rom);
+    span_deinit(&mapper->chr);
     *mapper = (struct nrom_mapper_t){};
 }
 
@@ -93,7 +79,7 @@ static u8 nrom_mapper_peek_v(const void *ptr, u16 addr)
     if (addr < 0x8000)
         return 0xFF;
 
-    return mapper->prg_rom[(addr - 0x8000) % mapper->prg_rom_len];
+    return mapper->prg_rom.ptr[(addr - 0x8000) % mapper->prg_rom.len];
 }
 
 static u8 nrom_mapper_read_v(void *ptr, u16 addr)
@@ -112,7 +98,7 @@ static struct mapper_ppu_read_t nrom_mapper_read_ppu_v(void *ptr, uint(14) addr)
     struct nrom_mapper_t *mapper = ptr;
 
     if (addr < 0x2000)
-        return ppu_read_direct(mapper->chr[addr]);
+        return ppu_read_direct(mapper->chr.ptr[addr]);
 
     if (mapper->nt_arrangement == INES_NT_ARR_HORIZONTAL)
         return ppu_read_vram(addr & 0x7FF);
@@ -144,12 +130,10 @@ static const struct mapper_vtable_t NROM_MAPPER_VTABLE = {
 };
 
 struct mmc1_mapper_t {
-    u8 *prg_rom;
-    size_t prg_rom_len;
-    u8 *prg_ram;
-    size_t prg_ram_len;
-    u8 *chr;
-    size_t chr_len;
+    struct span_t prg_rom;
+    struct span_t prg_ram;
+    struct span_t chr;
+    bool uses_chr_ram;
     uint(5) shift_reg;
 
     union {
@@ -175,38 +159,30 @@ mmc1_mapper_init(struct mmc1_mapper_t *mapper,
 {
     if (mapper == nullptr)
         return nullptr;
+    auto prg_rom = span_dup(ines->prg_rom);
 
-    u8 *prg_rom = memdup(ines->prg_rom.ptr, ines->prg_rom.len);
-    if (prg_rom == nullptr)
-        goto err_cleanup_1;
+    auto prg_ram = span_alloc(0x8000); // TODO: move 0x8000 to a constant
 
-    size_t prg_ram_len = 0x8000; // 32 KiB
+    bool chr_ram = false;
+    struct span_t chr = {};
 
-    u8 *prg_ram = calloc(prg_ram_len, sizeof(prg_ram[0]));
-    if (prg_ram == nullptr)
-        goto err_cleanup_2;
+    if (ines->chr.len != 0) {
+        chr = span_dup(ines->chr);
+        chr_ram = false;
+    } else {
 
-    u8 *chr = memdup(ines->chr.ptr, ines->chr.len);
-    if (chr == nullptr)
-        goto err_cleanup_3;
+        chr = span_alloc(0x2000);
+        chr_ram = true;
+    }
 
     *mapper = (struct mmc1_mapper_t){};
     mapper->prg_rom = prg_rom;
-    mapper->prg_rom_len = ines->prg_rom.len;
     mapper->prg_ram = prg_ram;
-    mapper->prg_ram_len = prg_ram_len;
     mapper->chr = chr;
-    mapper->chr_len = ines->chr.len;
+    mapper->uses_chr_ram = chr_ram;
     mmc1_mapper_reset(mapper);
 
     return mapper;
-
-err_cleanup_3:
-    free(prg_ram);
-err_cleanup_2:
-    free(prg_rom);
-err_cleanup_1:
-    return nullptr;
 }
 
 [[nodiscard]] static struct mmc1_mapper_t *
@@ -219,9 +195,9 @@ static void mmc1_mapper_deinit_v(void *ptr)
 {
     struct mmc1_mapper_t *mapper = ptr;
 
-    free(mapper->prg_rom);
-    free(mapper->prg_ram);
-    free(mapper->chr);
+    span_deinit(&mapper->chr);
+    span_deinit(&mapper->prg_ram);
+    span_deinit(&mapper->prg_rom);
     *mapper = (struct mmc1_mapper_t){};
 }
 
@@ -232,7 +208,7 @@ static u8 mmc1_mapper_peek_v(const void *ptr, u16 addr)
     if (addr < 0x8000) {
         u8 ram_en = mapper->prg_bank >> 4;
         if (ram_en == 0)
-            return mapper->prg_ram[addr & 0x1FFF];
+            return mapper->prg_ram.ptr[addr & 0x1FFF];
 
         return 0xFF;
     }
@@ -243,18 +219,19 @@ static u8 mmc1_mapper_peek_v(const void *ptr, u16 addr)
     switch (bank_mode) {
         case 0:
         case 1:
-            return mapper->prg_rom[(0x8000 * (bank >> 1)) + (addr - 0x8000)];
+            return mapper->prg_rom
+                .ptr[(0x8000 * (bank >> 1)) + (addr - 0x8000)];
         case 2:
             if (addr < 0xC000)
-                return mapper->prg_rom[addr - 0x8000];
+                return mapper->prg_rom.ptr[addr - 0x8000];
 
-            return mapper->prg_rom[(0x4000 * bank) + (addr - 0xC000)];
+            return mapper->prg_rom.ptr[(0x4000 * bank) + (addr - 0xC000)];
         case 3:
             if (addr < 0xC000)
-                return mapper->prg_rom[(0x4000 * bank) + (addr - 0x8000)];
+                return mapper->prg_rom.ptr[(0x4000 * bank) + (addr - 0x8000)];
 
-            return mapper
-                ->prg_rom[(mapper->prg_rom_len - 0x4000) + (addr - 0xC000)];
+            return mapper->prg_rom
+                .ptr[(mapper->prg_rom.len - 0x4000) + (addr - 0xC000)];
         default:
             unreachable();
     }
@@ -273,7 +250,7 @@ static void mmc1_mapper_write_v(void *ptr, u16 addr, u8 value)
         u8 ram_en = mapper->prg_bank >> 4;
 
         if (ram_en == 0)
-            mapper->prg_ram[addr & 0x1FFF] = value;
+            mapper->prg_ram.ptr[addr & 0x1FFF] = value;
 
         return;
     }
@@ -298,19 +275,16 @@ static struct mapper_ppu_read_t mmc1_mapper_read_ppu_v(void *ptr, uint(14) addr)
 
     if (addr < 0x2000) {
         u8 bank_mode = mapper->ctrl >> 4;
+        u16 chr_addr = 0;
 
-        if (bank_mode == 0) {
-            return ppu_read_direct(
-                mapper->chr[(0x2000 * mapper->chr_bank_0) + addr]);
-        }
+        if (bank_mode == 0)
+            chr_addr = (0x2000 * mapper->chr_bank_0) | addr;
+        else if (addr < 0x1000)
+            chr_addr = (0x1000 * mapper->chr_bank_0) | addr;
+        else
+            chr_addr = (0x1000 * mapper->chr_bank_1) | (addr & 0xFFF);
 
-        if (addr < 0x1000) {
-            return ppu_read_direct(
-                mapper->chr[(0x1000 * mapper->chr_bank_0) + addr]);
-        }
-
-        return ppu_read_direct(
-            mapper->chr[(0x1000 * mapper->chr_bank_1) + (addr - 0x1000)]);
+        return ppu_read_direct(mapper->chr.ptr[chr_addr % mapper->chr.len]);
     }
 
     u8 nt_arr = mapper->ctrl & 0b11;
@@ -319,7 +293,7 @@ static struct mapper_ppu_read_t mmc1_mapper_read_ppu_v(void *ptr, uint(14) addr)
         case 0: // one screen, lower bank
             return ppu_read_vram(addr & 0x3FF);
         case 1: // one screen, upper bank
-            return ppu_read_vram(0x400 + (addr & 0x3FF));
+            return ppu_read_vram(0x400 | (addr & 0x3FF));
         case 2: // horizontal arrangement (vertical mirroring)
             return ppu_read_vram(addr & 0x7FF);
         case 3: // vertical arrangement (horizontal mirroring)
@@ -334,8 +308,23 @@ mmc1_mapper_write_ppu_v(void *ptr, uint(14) addr, u8 value)
 {
     [[maybe_unused]] struct mmc1_mapper_t *mapper = ptr;
 
-    if (addr < 0x2000)
+    if (addr < 0x2000) {
+        if (mapper->uses_chr_ram) {
+            u8 bank_mode = mapper->ctrl >> 4;
+            u16 chr_addr = 0;
+
+            if (bank_mode == 0)
+                chr_addr = (0x2000 * mapper->chr_bank_0) | addr;
+            else if (addr < 0x1000)
+                chr_addr = (0x1000 * mapper->chr_bank_0) | addr;
+            else
+                chr_addr = (0x1000 * mapper->chr_bank_1) | (addr & 0xFFF);
+
+            mapper->chr.ptr[chr_addr % mapper->chr.len] = value;
+        }
+
         return ppu_write_done;
+    }
 
     u8 nt_arr = mapper->ctrl & 0b11;
 
@@ -343,7 +332,7 @@ mmc1_mapper_write_ppu_v(void *ptr, uint(14) addr, u8 value)
         case 0: // one screen, lower bank
             return ppu_write_vram(addr & 0x3FF, value);
         case 1: // one screen, upper bank
-            return ppu_write_vram(0x400 + (addr & 0x3FF), value);
+            return ppu_write_vram(0x400 | (addr & 0x3FF), value);
         case 2: // horizontal arrangement (vertical mirroring)
             return ppu_write_vram(addr & 0x7FF, value);
         case 3: // vertical arrangement (horizontal mirroring)
