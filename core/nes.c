@@ -94,8 +94,8 @@ struct nes_t {
 
     // ppu
     u64 ppu_cyc;
-    size_t hpos;
-    size_t vpos;
+    u16 hpos;
+    u16 vpos;
     u8 *vram;
     u8 *oam;
     frame_buf_mut_t frame_buf;
@@ -758,7 +758,7 @@ static void nes_log_trace(struct nes_t nes[static 1])
     }
 
     fprintf(nes->log_file,
-            "%-*sA:%02X X:%02X Y:%02X P:%02X SP:%02X PPU:%3zd,%3zd CYC:%zu\n",
+            "%-*sA:%02X X:%02X Y:%02X P:%02X SP:%02X PPU:%3u,%3u CYC:%zu\n",
             (int)(sizeof(buf) - 1), buf, trace.a, trace.x, trace.y, trace.p,
             trace.s, nes->vpos, nes->hpos, trace.cyc);
     fflush(nes->log_file);
@@ -921,7 +921,7 @@ void nes_dispatch_pixel(struct nes_t *nes)
                 u8 x_pos = nes->sprs_x[i];
                 u8 attr = nes->sprs_attr[i];
 
-                if (nes->hpos - 1 >= x_pos && (u8)nes->hpos - 1 < x_pos + 8) {
+                if (nes->hpos - 1 >= x_pos && nes->hpos - 1 < (u16)x_pos + 8) {
                     u8 rel_pos = nes->hpos - 1 - (size_t)x_pos;
 
                     u8 b0 = (nes->sprs_p0[i] >> (7 - rel_pos)) & 1;

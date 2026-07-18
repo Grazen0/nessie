@@ -161,25 +161,17 @@ mmc1_mapper_init(struct mmc1_mapper_t *mapper,
         return nullptr;
     auto prg_rom = span_dup(ines->prg_rom);
 
-    auto prg_ram = span_alloc(0x8000); // TODO: move 0x8000 to a constant
+    // according to the wiki, no program should use more than 32 kib of prg ram
+    auto prg_ram = span_alloc(0x8000);
 
-    bool chr_ram = false;
-    struct span_t chr = {};
-
-    if (ines->chr.len != 0) {
-        chr = span_dup(ines->chr);
-        chr_ram = false;
-    } else {
-
-        chr = span_alloc(0x2000);
-        chr_ram = true;
-    }
+    bool uses_chr_ram = ines->chr.len == 0;
+    struct span_t chr = uses_chr_ram ? span_alloc(0x2000) : span_dup(ines->chr);
 
     *mapper = (struct mmc1_mapper_t){};
     mapper->prg_rom = prg_rom;
     mapper->prg_ram = prg_ram;
     mapper->chr = chr;
-    mapper->uses_chr_ram = chr_ram;
+    mapper->uses_chr_ram = uses_chr_ram;
     mmc1_mapper_reset(mapper);
 
     return mapper;
@@ -219,19 +211,18 @@ static u8 mmc1_mapper_peek_v(const void *ptr, u16 addr)
     switch (bank_mode) {
         case 0:
         case 1:
-            return mapper->prg_rom
-                .ptr[(0x8000 * (bank >> 1)) + (addr - 0x8000)];
+            return mapper->prg_rom.ptr[((bank >> 1) << 15) | (addr & 0x7FFF)];
         case 2:
             if (addr < 0xC000)
-                return mapper->prg_rom.ptr[addr - 0x8000];
+                return mapper->prg_rom.ptr[addr & 0x7FFF];
 
-            return mapper->prg_rom.ptr[(0x4000 * bank) + (addr - 0xC000)];
+            return mapper->prg_rom.ptr[(bank << 14) | (addr & 0x3FFF)];
         case 3:
             if (addr < 0xC000)
-                return mapper->prg_rom.ptr[(0x4000 * bank) + (addr - 0x8000)];
+                return mapper->prg_rom.ptr[(bank << 14) | (addr & 0x3FFF)];
 
             return mapper->prg_rom
-                .ptr[(mapper->prg_rom.len - 0x4000) + (addr - 0xC000)];
+                .ptr[(mapper->prg_rom.len - 0x4000) | (addr & 0x3FFF)];
         default:
             unreachable();
     }
@@ -269,78 +260,69 @@ static void mmc1_mapper_write_v(void *ptr, u16 addr, u8 value)
     }
 }
 
-static struct mapper_ppu_read_t mmc1_mapper_read_ppu_v(void *ptr, uint(14) addr)
+static size_t mmc1_map_chr_addr(const struct mmc1_mapper_t mapper[static 1],
+                                uint(14) addr)
 {
-    struct mmc1_mapper_t *mapper = ptr;
+    assert(addr < 0x2000);
 
-    if (addr < 0x2000) {
-        u8 bank_mode = mapper->ctrl >> 4;
-        u16 chr_addr = 0;
+    u8 bank_mode = mapper->ctrl >> 4;
+    size_t unwrapped_addr = 0;
 
-        if (bank_mode == 0)
-            chr_addr = (0x2000 * mapper->chr_bank_0) | addr;
-        else if (addr < 0x1000)
-            chr_addr = (0x1000 * mapper->chr_bank_0) | addr;
-        else
-            chr_addr = (0x1000 * mapper->chr_bank_1) | (addr & 0xFFF);
+    if (bank_mode == 0)
+        unwrapped_addr = (0x2000 * mapper->chr_bank_0) | addr;
+    else if (addr < 0x1000)
+        unwrapped_addr = (0x1000 * mapper->chr_bank_0) | addr;
+    else
+        unwrapped_addr = (0x1000 * mapper->chr_bank_1) | (addr & 0xFFF);
 
-        return ppu_read_direct(mapper->chr.ptr[chr_addr % mapper->chr.len]);
-    }
+    return unwrapped_addr % mapper->chr.len;
+}
+
+static u16 mmc1_map_vram_addr(struct mmc1_mapper_t mapper[static 1], u16 addr)
+{
+    assert(addr >= 0x2000);
 
     u8 nt_arr = mapper->ctrl & 0b11;
-
     switch (nt_arr) {
         case 0: // one screen, lower bank
-            return ppu_read_vram(addr & 0x3FF);
+            return addr & 0x3FF;
         case 1: // one screen, upper bank
-            return ppu_read_vram(0x400 | (addr & 0x3FF));
+            return 0x400 | (addr & 0x3FF);
         case 2: // horizontal arrangement (vertical mirroring)
-            return ppu_read_vram(addr & 0x7FF);
+            return addr & 0x7FF;
         case 3: // vertical arrangement (horizontal mirroring)
-            return ppu_read_vram((addr & 0x3FF) | ((addr >> 1) & 0x400));
+            return (addr & 0x3FF) | ((addr >> 1) & 0x400);
         default:
             unreachable();
     }
 }
 
+static struct mapper_ppu_read_t mmc1_mapper_read_ppu_v(void *ptr, uint(14) addr)
+{
+    struct mmc1_mapper_t *mapper = ptr;
+
+    if (addr < 0x2000) {
+        size_t chr_addr = mmc1_map_chr_addr(mapper, addr);
+        return ppu_read_direct(mapper->chr.ptr[chr_addr]);
+    }
+
+    u16 vram_addr = mmc1_map_vram_addr(mapper, addr);
+    return ppu_read_vram(vram_addr);
+}
+
 static struct mapper_ppu_write_t
 mmc1_mapper_write_ppu_v(void *ptr, uint(14) addr, u8 value)
 {
-    [[maybe_unused]] struct mmc1_mapper_t *mapper = ptr;
+    struct mmc1_mapper_t *mapper = ptr;
 
     if (addr < 0x2000) {
-        if (mapper->uses_chr_ram) {
-            u8 bank_mode = mapper->ctrl >> 4;
-            u16 chr_addr = 0;
-
-            if (bank_mode == 0)
-                chr_addr = (0x2000 * mapper->chr_bank_0) | addr;
-            else if (addr < 0x1000)
-                chr_addr = (0x1000 * mapper->chr_bank_0) | addr;
-            else
-                chr_addr = (0x1000 * mapper->chr_bank_1) | (addr & 0xFFF);
-
-            mapper->chr.ptr[chr_addr % mapper->chr.len] = value;
-        }
-
+        size_t chr_addr = mmc1_map_chr_addr(mapper, addr);
+        mapper->chr.ptr[chr_addr] = value;
         return ppu_write_done;
     }
 
-    u8 nt_arr = mapper->ctrl & 0b11;
-
-    switch (nt_arr) {
-        case 0: // one screen, lower bank
-            return ppu_write_vram(addr & 0x3FF, value);
-        case 1: // one screen, upper bank
-            return ppu_write_vram(0x400 | (addr & 0x3FF), value);
-        case 2: // horizontal arrangement (vertical mirroring)
-            return ppu_write_vram(addr & 0x7FF, value);
-        case 3: // vertical arrangement (horizontal mirroring)
-            return ppu_write_vram((addr & 0x3FF) | ((addr >> 1) & 0x400),
-                                  value);
-        default:
-            unreachable();
-    }
+    u16 vram_addr = mmc1_map_vram_addr(mapper, addr);
+    return ppu_write_vram(vram_addr, value);
 }
 
 static struct mapper_vtable_t MMC1_MAPPER_VTABLE = {
