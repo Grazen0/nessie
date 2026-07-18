@@ -605,7 +605,6 @@ enum nes_error_t nes_load_rom(struct nes_t *nes,
         nes->mapper_init = false;
     }
 
-    printf("Mapper number: $%02X\n", ines->mapper_num);
     NES_TRY(mapper_from_rom(ines, &nes->mapper));
     nes->mapper_init = true;
 

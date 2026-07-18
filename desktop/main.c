@@ -133,6 +133,13 @@ int main(int argc, char *argv[static argc + 1])
         goto cleanup_3;
     }
 
+    printf("\n");
+    printf(" PRG ROM: %u x 16KiB\n", ines.prg_banks);
+    printf(" CHR ROM: %u x 8KiB\n", ines.chr_banks);
+    printf(" Mapper #: %u\n", ines.mapper_num);
+    printf(" Trained: %s\n", ines.trainer.ptr == nullptr ? "No" : "Yes");
+    printf("\n");
+
     if ((err = nes_load_rom(nes, &ines)) != NES_OK) {
         fprintf(stderr, "Error: %s\n", nes_error_str(err));
         retval = EXIT_FAILURE;
