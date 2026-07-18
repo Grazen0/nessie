@@ -946,11 +946,11 @@ void cpu_step(struct cpu_t cpu[static 1], struct memory_t mem)
 
         case 0x00: // brk
             cpu->trace.instr.mnemonic = "BRK";
-            cpu_st_push_u16(cpu, mem, cpu->pc);
+            cpu_st_push_u16(cpu, mem, cpu->pc + 1);
             cpu_st_push(cpu, mem, cpu->p | FLAG_B);
 
             cpu->pc = cpu_read_mem_u16(cpu, mem, IRQ_LOC);
-            set_bits(&cpu->p, FLAG_I, true);
+            cpu->p |= FLAG_I;
 
             ++cpu->cyc;
             break;
