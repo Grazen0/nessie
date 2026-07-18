@@ -4,7 +4,7 @@ nessie_sources = [
 ]
 
 nessie_dependencies = [
-  core_dep,
+  nessie_core_dep,
 ]
 
 frontend = get_option('frontend')

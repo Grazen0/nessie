@@ -1,9 +1,9 @@
-lib_args = ['-DBUILDING_CORE']
+nessie_core_args = ['-DBUILDING_CORE']
 
-core_dependencies = [
+nessie_core_dependencies = [
 ]
 
-core_sources = [
+nessie_core_sources = [
   'nes.c',
   'mapper.c',
   'util.c',
@@ -13,17 +13,17 @@ core_sources = [
   'ines.c',
 ]
 
-core_lib = library(
+nessie_core_lib = library(
   'core',
-  core_sources,
+  nessie_core_sources,
   install : true,
-  c_shared_args : lib_args,
-  dependencies : core_dependencies,
+  c_shared_args : nessie_core_args,
+  dependencies : nessie_core_dependencies,
 )
 
-core_dep = declare_dependency(
+nessie_core_dep = declare_dependency(
   include_directories : include_directories('.'),
-  dependencies : core_dependencies,
-  link_with : core_lib,
+  dependencies : nessie_core_dependencies,
+  link_with : nessie_core_lib,
 )
-meson.override_dependency('core', core_dep)
+meson.override_dependency('nessie-core', nessie_core_dep)
