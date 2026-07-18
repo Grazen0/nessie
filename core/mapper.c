@@ -206,7 +206,7 @@ static u8 mmc1_peek_v(const void *ptr, u16 addr)
     }
 
     u8 bank_mode = (mapper->ctrl >> 2) & 0b11;
-    u8 bank = mapper->prg_bank & 0xF;
+    size_t bank = mapper->prg_bank & 0xF;
 
     switch (bank_mode) {
         case 0:
@@ -386,10 +386,6 @@ static u8 mmc2_peek_v(const void *ptr, u16 addr)
             (0x2000 * (size_t)mapper->prg_rom_bank) | (addr & 0x1FFF);
         return mapper->prg_rom.ptr[rom_addr];
     }
-
-    // static int i = 0;
-    // if (++i >= 10)
-    //     exit(0);
 
     size_t rom_addr = mapper->prg_rom.len - 0x8000 + (addr & 0x7FFF);
     return mapper->prg_rom.ptr[rom_addr];
