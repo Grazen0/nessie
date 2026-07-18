@@ -830,9 +830,6 @@ static uint(15) y_increment(uint(15) v)
 
 void nes_dispatch_pixel(struct nes_t *nes)
 {
-    assert((nes->ppuctrl & PPUCTRL_SPR_SIZE) == 0 &&
-           "TODO: implement 8x16 sprites");
-
     bool ppu_enabled = (nes->ppumask & (PPUMASK_BG_EN | PPUMASK_SPR_EN)) != 0;
 
     bool hpos_visible = nes->hpos > 0 && nes->hpos <= NES_SCREEN_WIDTH;
@@ -994,7 +991,10 @@ void nes_dispatch_pixel(struct nes_t *nes)
                 u8 y = nes->oam[i];
                 nes->oam_snd[nes->soam_idx] = y;
 
-                if (y <= nes->vpos && nes->vpos < (size_t)y + 8) {
+                size_t spr_height =
+                    (nes->ppuctrl & PPUCTRL_SPR_SIZE) == 0 ? 8 : 16;
+
+                if (y <= nes->vpos && nes->vpos < y + spr_height) {
                     if (nes->soam_idx == 0)
                         nes->loaded_spr0 = true;
 
@@ -1017,18 +1017,30 @@ void nes_dispatch_pixel(struct nes_t *nes)
             bool flip_hor = (attr & ATTRS_FLIP_HORIZONTAL) != 0;
             bool flip_ver = (attr & ATTRS_FLIP_VERTICAL) != 0;
 
-            u16 pat_base = (((u16)nes->ppuctrl & PPUCTRL_SPR_PAT_ADDR) << 8) |
-                           ((u16)tile_id << 4);
+            size_t spr_height = (nes->ppuctrl & PPUCTRL_SPR_SIZE) == 0 ? 8 : 16;
+            u16 pat_addr = 0;
 
             u8 rel_y = nes->vpos - y_pos;
-            u8 rel_y_real = flip_ver ? (7 - rel_y) : rel_y;
+            u8 rel_y_real = 0;
+
+            if ((nes->ppuctrl & PPUCTRL_SPR_SIZE) == 0) {
+                pat_addr = (((u16)nes->ppuctrl & PPUCTRL_SPR_PAT_ADDR) << 9) |
+                           ((u16)tile_id << 4);
+                rel_y_real = flip_ver ? (spr_height - 1 - rel_y) : rel_y;
+            } else {
+                u16 pat_base = ((u16)tile_id & 1) << 12;
+                u16 tile_id_real =
+                    (rel_y < 8) ^ flip_ver ? (tile_id & ~1) : (tile_id | 1);
+                pat_addr = pat_base | (tile_id_real << 4);
+                rel_y_real = flip_ver ? (7 - (rel_y % 8)) : rel_y % 8;
+            }
 
             if ((nes->hpos % 8) == 6) {
                 // fetch plane 0
                 nes->sprs_x[nes->soam_idx] = x_pos;
                 nes->sprs_attr[nes->soam_idx] = attr;
                 nes->sprs_p0[nes->soam_idx] =
-                    nes_read_ppu(nes, pat_base + rel_y_real);
+                    nes_read_ppu(nes, pat_addr + rel_y_real);
 
                 if (flip_hor) {
                     nes->sprs_p0[nes->soam_idx] =
@@ -1038,7 +1050,7 @@ void nes_dispatch_pixel(struct nes_t *nes)
             } else if ((nes->hpos % 8) == 0) {
                 // fetch plane 1
                 nes->sprs_p1[nes->soam_idx] =
-                    nes_read_ppu(nes, pat_base + rel_y_real + 8);
+                    nes_read_ppu(nes, pat_addr + rel_y_real + 8);
 
                 if (flip_hor) {
                     nes->sprs_p1[nes->soam_idx] =
