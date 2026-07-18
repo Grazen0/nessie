@@ -4,6 +4,7 @@
 #include "util.h"
 #include <assert.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 static inline struct mapper_ppu_read_t ppu_read_direct(u8 value)
@@ -36,7 +37,7 @@ static inline struct mapper_ppu_write_t ppu_write_vram(u16 addr, u8 value)
 
 struct nrom_mapper_t {
     struct span_t prg_rom;
-    struct span_t chr;
+    struct span_t chr_rom;
     enum ines_nt_arrangement nt_arrangement;
 };
 
@@ -48,10 +49,10 @@ nrom_mapper_init(struct nrom_mapper_t *mapper,
         return nullptr;
 
     auto prg_rom = span_dup(ines->prg_rom);
-    auto chr = span_dup(ines->chr);
+    auto chr_rom = span_dup(ines->chr_rom);
 
     mapper->prg_rom = prg_rom;
-    mapper->chr = chr;
+    mapper->chr_rom = chr_rom;
     mapper->nt_arrangement = ines->nt_arrangement;
 
     return mapper;
@@ -68,7 +69,7 @@ static void nrom_mapper_deinit_v(void *ptr)
     struct nrom_mapper_t *mapper = ptr;
 
     span_deinit(&mapper->prg_rom);
-    span_deinit(&mapper->chr);
+    span_deinit(&mapper->chr_rom);
     *mapper = (struct nrom_mapper_t){};
 }
 
@@ -98,7 +99,7 @@ static struct mapper_ppu_read_t nrom_mapper_read_ppu_v(void *ptr, uint(14) addr)
     struct nrom_mapper_t *mapper = ptr;
 
     if (addr < 0x2000)
-        return ppu_read_direct(mapper->chr.ptr[addr]);
+        return ppu_read_direct(mapper->chr_rom.ptr[addr]);
 
     if (mapper->nt_arrangement == INES_NT_ARR_HORIZONTAL)
         return ppu_read_vram(addr & 0x7FF);
@@ -109,7 +110,7 @@ static struct mapper_ppu_read_t nrom_mapper_read_ppu_v(void *ptr, uint(14) addr)
 static struct mapper_ppu_write_t
 nrom_mapper_write_ppu_v(void *ptr, uint(14) addr, u8 value)
 {
-    [[maybe_unused]] struct nrom_mapper_t *mapper = ptr;
+    struct nrom_mapper_t *mapper = ptr;
 
     if (addr < 0x2000)
         return ppu_write_done;
@@ -164,8 +165,9 @@ mmc1_mapper_init(struct mmc1_mapper_t *mapper,
     // according to the wiki, no program should use more than 32 kib of prg ram
     auto prg_ram = span_alloc(0x8000);
 
-    bool uses_chr_ram = ines->chr.len == 0;
-    struct span_t chr = uses_chr_ram ? span_alloc(0x2000) : span_dup(ines->chr);
+    bool uses_chr_ram = ines->chr_rom.len == 0;
+    struct span_t chr =
+        uses_chr_ram ? span_alloc(0x2000) : span_dup(ines->chr_rom);
 
     *mapper = (struct mmc1_mapper_t){};
     mapper->prg_rom = prg_rom;
@@ -334,6 +336,154 @@ static struct mapper_vtable_t MMC1_MAPPER_VTABLE = {
     .write_ppu = mmc1_mapper_write_ppu_v,
 };
 
+struct mmc2_mapper_t {
+    struct span_t prg_rom;
+    struct span_t chr_rom;
+    uint(4) prg_rom_bank;
+    uint(5) chr_rom_bank[4];
+    uint(1) mirroring;
+    u8 latch[2];
+};
+
+static struct mmc2_mapper_t *
+mmc2_mapper_init(struct mmc2_mapper_t *mapper,
+                 const struct ines_t ines[static 1])
+{
+    if (mapper == nullptr)
+        return nullptr;
+
+    struct span_t prg_rom = span_dup(ines->prg_rom);
+    struct span_t chr_rom = span_dup(ines->chr_rom);
+
+    *mapper = (struct mmc2_mapper_t){};
+    mapper->prg_rom = prg_rom;
+    mapper->chr_rom = chr_rom;
+
+    return mapper;
+}
+
+[[nodiscard]] static struct mmc2_mapper_t *
+mmc2_mapper_create(const struct ines_t ines[static 1])
+{
+    return mmc2_mapper_init(calloc(1, sizeof(struct mmc2_mapper_t)), ines);
+}
+
+static void mmc2_mapper_deinit_v(void *ptr)
+{
+    struct mmc2_mapper_t *mapper = ptr;
+
+    span_deinit(&mapper->chr_rom);
+    span_deinit(&mapper->prg_rom);
+    *mapper = (struct mmc2_mapper_t){};
+}
+
+static u8 mmc2_mapper_peek_v(const void *ptr, u16 addr)
+{
+    const struct mmc2_mapper_t *mapper = ptr;
+
+    if (addr < 0x8000)
+        return 0xFF;
+
+    if (addr < 0xA000) {
+        size_t rom_addr =
+            (0x2000 * (size_t)mapper->prg_rom_bank) | (addr & 0x1FFF);
+        return mapper->prg_rom.ptr[rom_addr];
+    }
+
+    // static int i = 0;
+    // if (++i >= 10)
+    //     exit(0);
+
+    size_t rom_addr = mapper->prg_rom.len - 0x8000 + (addr & 0x7FFF);
+    return mapper->prg_rom.ptr[rom_addr];
+}
+
+static u8 mmc2_mapper_read_v(void *ptr, u16 addr)
+{
+    return mmc2_mapper_peek_v(ptr, addr);
+}
+
+static void mmc2_mapper_write_v(void *ptr, u16 addr, u8 value)
+{
+    struct mmc2_mapper_t *mapper = ptr;
+
+    if (addr < 0xA000)
+        return;
+
+    if (addr < 0xB000) {
+        mapper->prg_rom_bank = value;
+        return;
+    }
+
+    if (addr < 0xF000) {
+        mapper->chr_rom_bank[(addr >> 12) - 0xB] = value;
+        return;
+    }
+
+    mapper->mirroring = value;
+}
+
+static struct mapper_ppu_read_t mmc2_mapper_read_ppu_v(void *ptr, uint(14) addr)
+{
+    struct mmc2_mapper_t *mapper = ptr;
+
+    if (addr < 0x2000) {
+        size_t bank_num = 0;
+
+        if (addr < 0x1000)
+            bank_num = mapper->latch[0] == 0xFD ? 0 : 1;
+        else
+            bank_num = mapper->latch[1] == 0xFD ? 2 : 3;
+
+        size_t bank = mapper->chr_rom_bank[bank_num];
+
+        u8 val =
+            mapper->chr_rom
+                .ptr[((0x1000 * bank) | (addr & 0xFFF)) % mapper->chr_rom.len];
+
+        if (addr == 0x0FD8)
+            mapper->latch[0] = 0xFD;
+        else if (addr == 0x0FE8)
+            mapper->latch[0] = 0xFE;
+        else if (0x1FD8 <= addr && addr <= 0x1FDF)
+            mapper->latch[1] = 0xFD;
+        else if (0x1FE8 <= addr && addr <= 0x1FEF)
+            mapper->latch[1] = 0xFE;
+
+        return ppu_read_direct(val);
+    }
+
+    if (mapper->mirroring == 0) // vertical mirroring
+        return ppu_read_vram(addr & 0x7FF);
+
+    // horizontal mirroring
+    return ppu_read_vram((addr & 0x3FF) | ((addr >> 1) & 0x400));
+}
+
+static struct mapper_ppu_write_t
+mmc2_mapper_write_ppu_v(void *ptr, [[maybe_unused]] uint(14) addr, u8 value)
+{
+    struct mmc2_mapper_t *mapper = ptr;
+
+    if (addr < 0x2000)
+        return ppu_write_done;
+
+    if (mapper->mirroring == 0) // vertical mirroring
+        return ppu_write_vram(addr & 0x7FF, value);
+
+    // horizontal mirroring
+    return ppu_write_vram((addr & 0x3FF) | ((addr >> 1) & 0x400), value);
+}
+
+static struct mapper_vtable_t MMC2_MAPPER_VTABLE = {
+    .deinit = mmc2_mapper_deinit_v,
+    .read = mmc2_mapper_read_v,
+    .peek = mmc2_mapper_peek_v,
+    .write = mmc2_mapper_write_v,
+    .read_ppu = mmc2_mapper_read_ppu_v,
+    .write_ppu = mmc2_mapper_write_ppu_v,
+};
+
 #define MAPPER_CASE(NUM, CREATE, VTABLE) \
     case NUM:                            \
         out_mapper->ptr = CREATE(ines);  \
@@ -347,6 +497,7 @@ enum nes_error_t mapper_from_rom(const struct ines_t ines[static 1],
     switch (ines->mapper_num) {
         MAPPER_CASE(0x00, nrom_mapper_create, NROM_MAPPER_VTABLE)
         MAPPER_CASE(0x01, mmc1_mapper_create, MMC1_MAPPER_VTABLE)
+        MAPPER_CASE(0x09, mmc2_mapper_create, MMC2_MAPPER_VTABLE)
 
         default:
             return NES_ERR_UNSUPPORTED_MAPPER;

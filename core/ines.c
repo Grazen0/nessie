@@ -54,18 +54,19 @@ enum nes_error_t ines_parse(size_t rom_len, const u8 rom_data[static rom_len],
     if ((flags_6 & F6_TRAINER) != 0) {
         static constexpr size_t TRAINER_LEN = 512;
         NES_TRY(span_take(&reader, TRAINER_LEN, &trainer));
+        assert(false && "TODO: maybe handle trainers");
     }
 
     struct view_t prg_rom = {};
-    struct view_t chr = {};
+    struct view_t chr_rom = {};
 
     NES_TRY(span_take(&reader, INES_PRG_BANK_LEN * prg_banks, &prg_rom));
-    NES_TRY(span_take(&reader, INES_CHR_BANK_LEN * chr_banks, &chr));
+    NES_TRY(span_take(&reader, INES_CHR_BANK_LEN * chr_banks, &chr_rom));
 
     if (out_ines != nullptr) {
         *out_ines = (struct ines_t){
             .prg_rom = prg_rom,
-            .chr = chr,
+            .chr_rom = chr_rom,
             .trainer = trainer,
             .prg_banks = prg_banks,
             .chr_banks = chr_banks,
@@ -75,5 +76,6 @@ enum nes_error_t ines_parse(size_t rom_len, const u8 rom_data[static rom_len],
                                   : INES_NT_ARR_HORIZONTAL,
         };
     }
+
     return NES_OK;
 }
